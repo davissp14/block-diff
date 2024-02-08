@@ -20,11 +20,14 @@ func TestFSInitialization(t *testing.T) {
 	}
 }
 
-func TestBlockEvaluation(t *testing.T) {
+func TestWriteDigest(t *testing.T) {
 	fs := NewFilesystem("assets/pg_altered.ext4")
 
-	if err := fs.EvaluateBlocks("output/pg_altered.ext4.blocks"); err != nil {
+	if err := fs.WriteDigest("digests/pg.ext4.digest"); err != nil {
 		t.Fatal(err)
 	}
 
+	if err := fs.Backup("backups/pg_backup.ext4"); err != nil {
+		t.Fatal("error backing up file:", err)
+	}
 }

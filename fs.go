@@ -60,14 +60,14 @@ func NewFilesystem(devicePath string) *FS {
 	}
 }
 
-func (fs *FS) EvaluateBlocks(outputFilePath string) error {
+func (fs *FS) WriteDigest(digestFilePath string) error {
 	f, err := os.Open(fs.filePath)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
-	backupFile, err := os.OpenFile(outputFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	backupFile, err := os.OpenFile(digestFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return fmt.Errorf("error opening backup file: %v", err)
 	}
@@ -86,6 +86,33 @@ func (fs *FS) EvaluateBlocks(outputFilePath string) error {
 		data := fmt.Sprintf("%d: %s\n", chunkNum, hash)
 		// You might want to prepend each block with its number or metadata
 		_, err = backupFile.Write([]byte(data))
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (fs *FS) Backup(outputFilePath string) error {
+	f, err := os.Open(fs.filePath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	backupFile, err := os.OpenFile(outputFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return fmt.Errorf("error opening backup file: %v", err)
+	}
+	defer backupFile.Close()
+
+	for chunkNum := 0; chunkNum < fs.totalChunks; chunkNum++ {
+		blockData, err := readBlock(f, fs.chunkSize, chunkNum)
+		if err != nil {
+			return err
+		}
+		_, err = backupFile.Write(blockData)
 		if err != nil {
 			return err
 		}
