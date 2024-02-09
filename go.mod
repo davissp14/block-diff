@@ -9,5 +9,6 @@ require (
 
 require (
 	github.com/go-errors/errors v1.0.2 // indirect
+	github.com/mattn/go-sqlite3 v1.14.22 // indirect
 	golang.org/x/net v0.0.0-20200501053045-e0ff5e5a1de5 // indirect
 )

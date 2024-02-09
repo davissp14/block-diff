@@ -1,0 +1,2 @@
+
+* It's probably more efficient to ditch the empty positions field and instead just track the chunk key with an empty string.

@@ -1,8 +1,7 @@
 package block
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
+	"database/sql"
 	"fmt"
 	"io"
 	"os"
@@ -13,10 +12,10 @@ import (
 
 const (
 	superblock0Offset = 1024
-	zeroByteHash      = "30e14955ebf1352266dc2ff8067e68104607e750abb9d3b36582b8af909fcb58"
 )
 
 type FS struct {
+	store       *sql.DB
 	filePath    string
 	blockCount  int
 	blockSize   int
@@ -24,7 +23,10 @@ type FS struct {
 	totalChunks int
 }
 
-func NewFilesystem(devicePath string) *FS {
+const AssetsPath = "assets"
+
+func NewFilesystem(deviceName string) *FS {
+	devicePath := fmt.Sprintf("%s/%s", AssetsPath, deviceName)
 	f, err := os.Open(devicePath)
 	if err != nil {
 		log.Panic(err)
@@ -60,67 +62,6 @@ func NewFilesystem(devicePath string) *FS {
 	}
 }
 
-func (fs *FS) WriteDigest(digestFilePath string) error {
-	f, err := os.Open(fs.filePath)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	backupFile, err := os.OpenFile(digestFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		return fmt.Errorf("error opening backup file: %v", err)
-	}
-	defer backupFile.Close()
-
-	for chunkNum := 0; chunkNum < fs.totalChunks; chunkNum++ {
-		blockData, err := readBlock(f, fs.chunkSize, chunkNum)
-		if err != nil {
-			return err
-		}
-
-		hash := calculateBlockHash(blockData)
-		if hash == zeroByteHash {
-			continue
-		}
-		data := fmt.Sprintf("%d: %s\n", chunkNum, hash)
-		// You might want to prepend each block with its number or metadata
-		_, err = backupFile.Write([]byte(data))
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func (fs *FS) Backup(outputFilePath string) error {
-	f, err := os.Open(fs.filePath)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	backupFile, err := os.OpenFile(outputFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		return fmt.Errorf("error opening backup file: %v", err)
-	}
-	defer backupFile.Close()
-
-	for chunkNum := 0; chunkNum < fs.totalChunks; chunkNum++ {
-		blockData, err := readBlock(f, fs.chunkSize, chunkNum)
-		if err != nil {
-			return err
-		}
-		_, err = backupFile.Write(blockData)
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
 func readBlock(disk *os.File, chunkSize, chunkNum int) ([]byte, error) {
 	buffer := make([]byte, chunkSize)
 	_, err := disk.Seek(int64(chunkSize*chunkNum), 0)
@@ -132,9 +73,4 @@ func readBlock(disk *os.File, chunkSize, chunkNum int) ([]byte, error) {
 		return nil, err
 	}
 	return buffer, nil
-}
-
-func calculateBlockHash(blockData []byte) string {
-	hash := sha256.Sum256(blockData)
-	return hex.EncodeToString(hash[:])
 }
