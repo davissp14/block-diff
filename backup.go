@@ -5,9 +5,11 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
-	"math/rand"
 	"os"
+	"os/exec"
+	"strconv"
 	"strings"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -15,167 +17,181 @@ import (
 const (
 	restoreDirectory = "restores"
 	backupDirectory  = "backups"
-	zeroByteHash     = "30e14955ebf1352266dc2ff8067e68104607e750abb9d3b36582b8af909fcb58"
+	blockSize        = 4096 // Assumes 4k block size
+
+	// hashSizeInBlocks is the number of blocks we evaluate for a given hash.
+	// A higher number will result in lower differential backup granularity and lower storage overhead.
+	hashSizeInBlocks = 256
+
+	backupTypeDifferential = "differential"
+	backupTypeFull         = "full"
 )
 
-func Backup(fs *FS, store *sql.DB) (Digest, error) {
-	// Open up filesystem device
-	dev, err := os.Open(fs.filePath)
+func Backup(store *sql.DB, vol *Volume) (BackupRecord, error) {
+	chunkSize, totalChunks, err := calculateBlocks(vol.devicePath)
 	if err != nil {
-		return Digest{}, err
+		return BackupRecord{}, err
 	}
-	defer dev.Close()
 
-	var digest Digest
+	var backupType string
 
-	// Discover the last full digest if it exists
-	lastDigest, err := lastFullDigest(store)
+	fullBackup, err := findLastFullBackupRecord(store, vol.id)
 	switch {
 	case err == sql.ErrNoRows:
-		digest.fullDigest = true // Create a full digest
+		backupType = backupTypeFull
 	case err != nil:
-		return Digest{}, err
+		return BackupRecord{}, err
+	default:
+		backupType = backupTypeDifferential
 	}
 
-	// Create the backup file
-	sourceNameSlice := strings.Split(fs.filePath, "/")
-	sourceName := sourceNameSlice[len(sourceNameSlice)-1]
-	backupFileName := calculateBackupName(sourceName, &digest)
-	backupFilePath := fmt.Sprintf("%s/%s", backupDirectory, backupFileName)
-
-	backupFile, err := os.OpenFile(backupFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	// Create the backup record
+	// TODO - Consider storing a checksum of the target volume, so we can verify at restore time.
+	backupFileName := generateBackupName(vol, backupType)
+	backup, err := insertBackupRecord(store, vol.id, backupFileName, backupType, totalChunks, chunkSize)
 	if err != nil {
-		return Digest{}, fmt.Errorf("error opening backup file: %v", err)
-	}
-	defer backupFile.Close()
-
-	digest.fileName = sourceName
-	digest.entries = make(map[int]string)
-	digest.chunkSize = fs.chunkSize
-	digest.totalChunks = fs.totalChunks
-
-	for chunkNum := 0; chunkNum < fs.totalChunks; chunkNum++ {
-		blockData, err := readBlock(dev, fs.chunkSize, chunkNum)
-		if err != nil {
-			return Digest{}, err
-		}
-
-		hash := calculateBlockHash(blockData)
-
-		// If the hash is all zeros, add it to the empty positions
-		// Note: This will reduce the size of the digest and we track the numbers
-		// for restore purposes.
-		if hash == zeroByteHash {
-			digest.emptyPositions = append(digest.emptyPositions, chunkNum)
-			continue
-		}
-
-		// If the hash is the same as the last digest, skip it
-		if !digest.fullDigest && lastDigest.entries[chunkNum] == hash {
-			continue
-		}
-
-		// Write blockdata to the backup file
-		_, err = backupFile.Write(blockData)
-		if err != nil {
-			return Digest{}, fmt.Errorf("error writing to backup file: %v", err)
-		}
-
-		// Add the hash to the digest
-		digest.entries[chunkNum] = hash
+		return BackupRecord{}, err
 	}
 
-	if err := writeDigest(store, backupFileName, fs.totalChunks, fs.chunkSize, digest); err != nil {
-		return Digest{}, err
-	}
-
-	return digest, nil
-}
-
-func dumpHashesToFile(fs *FS, sourcePath, targetPath string) (Digest, error) {
-	// Open up filesystem device
-	dev, err := os.Open(sourcePath)
+	dev, err := os.Open(vol.devicePath)
 	if err != nil {
-		return Digest{}, err
+		return BackupRecord{}, err
 	}
 	defer dev.Close()
 
-	targetFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		return Digest{}, fmt.Errorf("error opening backup file: %v", err)
-	}
-	defer targetFile.Close()
+	// TODO - Figure out a good way to batch these inserts.
 
-	// digestFileName := fmt.Sprintf("digests/%s.digest", fileName)
-	// digestFile, err := os.OpenFile(digestFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	// if err != nil {
-	// 	return Digest{}, fmt.Errorf("error opening backup file: %v", err)
-	// }
-	// defer digestFile.Close()
-
-	// digest.fileName = fileName
-	// digest.entries = make(map[int]string)
-	// digest.fullDigest = fullDigest
-	// digest.chunkSize = fs.chunkSize
-	// digest.totalChunks = fs.totalChunks
-
-	var digest Digest
-	digest.entries = make(map[int]string)
-
-	for chunkNum := 0; chunkNum < fs.totalChunks; chunkNum++ {
-		blockData, err := readBlock(dev, fs.chunkSize, chunkNum)
+	// Create a block digest for the device.
+	for chunkNum := 0; chunkNum < totalChunks; chunkNum++ {
+		blockData, err := readBlock(dev, chunkSize, chunkNum)
 		if err != nil {
-			return Digest{}, err
+			return BackupRecord{}, err
 		}
 
 		hash := calculateBlockHash(blockData)
 
-		entry := fmt.Sprintf("%d: %s\n", chunkNum, hash)
+		block, err := insertBlock(store, hash)
+		if err != nil {
+			return BackupRecord{}, err
+		}
 
-		targetFile.Write([]byte(entry))
-		// If the hash is all zeros, add it to the empty positions
-		// Note: This will reduce the size of the digest and we track the numbers
-		// for restore purposes.
-		// if excludeZeros && hash == zeroByteHash {
-		// 	digest.emptyPositions = append(digest.emptyPositions, chunkNum)
-		// 	continue
-		// }
+		if backup.backupType == backupTypeDifferential {
+			refBlock, err := findBlockAtPosition(store, fullBackup.id, chunkNum)
+			if err != nil && err != sql.ErrNoRows {
+				return BackupRecord{}, err
+			}
 
-		// If the hash is the same as the last digest, skip it
-		// if !digest.fullDigest && lastDigest.entries[chunkNum] == hash {
-		// 	continue
-		// }
-		// entry := fmt.Sprintf("%d: %s\n", chunkNum, hash)
-		// _, err = digestFile.Write([]byte(entry))
-		// if err != nil {
-		// 	return Digest{}, fmt.Errorf("error writing to digest file: %v", err)
-		// }
+			// Skip if the hash was already registered by the last full backup.
+			if refBlock != nil && refBlock.hash == hash {
+				continue
+			}
+
+			if refBlock == nil {
+				if _, err := insertBlockPosition(store, backup.id, block.id, chunkNum); err != nil {
+					return BackupRecord{}, err
+				}
+				continue
+			}
+		}
+
+		_, err = insertBlockPosition(store, backup.id, block.id, chunkNum)
+		if err != nil {
+			return BackupRecord{}, err
+		}
+	}
+
+	// Create and open up the backup file for writing.
+	backupPath := fmt.Sprintf("%s/%s", backupDirectory, backup.fileName)
+	backupTarget, err := os.OpenFile(backupPath, os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return backup, fmt.Errorf("error opening restore file: %v", err)
+	}
+	defer backupTarget.Close()
+
+	// Query sqlite for only the blocks that need to be backed up.
+	// TODO - Flag zero block hashes, so we can exclude it.
+	rows, err := store.Query("SELECT block_id, MIN(position) AS position FROM block_positions where backup_id = ? GROUP BY block_id ORDER BY block_id;", backup.id)
+	if err != nil {
+		return backup, err
+	}
+
+	// Iterate over each resolved block position and write the block data for that position to the backup file.
+	for rows.Next() {
+		var blockID int
+		var position int
+		if err := rows.Scan(&blockID, &position); err != nil {
+			return backup, err
+		}
+
+		blockData, err := readBlock(dev, chunkSize, position)
+		if err != nil {
+			return backup, err
+		}
 
 		// Write blockdata to the backup file
-		// _, err = backupFile.Write(blockData)
-		// if err != nil {
-		// 	return Digest{}, fmt.Errorf("error writing to backup file: %v", err)
-		// }
-
-		// Add the hash to the digest
-		digest.entries[chunkNum] = hash
+		_, err = backupTarget.Write(blockData)
+		if err != nil {
+			return backup, fmt.Errorf("error writing to backup file: %v", err)
+		}
 	}
 
-	return digest, nil
-	// return writeDigest(store, backupFileName, fs.totalChunks, fs.chunkSize, digest)
+	return backup, nil
 }
 
-func calculateBackupName(sourceFileName string, d *Digest) string {
-	if d.fullDigest {
-		return fmt.Sprintf("%s_%d.full", sourceFileName, d.id)
-	} else {
-		// Random number for partial backup
-		rand := rand.Intn(100000)
-		return fmt.Sprintf("%s_%d_%d.partial", sourceFileName, d.id, rand)
+// calculateBlocks will calculate the total number of blocks and the chunk size for a given file path and store it in the backup record.
+func calculateBlocks(devicePath string) (chunkSize int, totalChunks int, err error) {
+	fileInfo, err := os.Stat(devicePath)
+	if err != nil {
+		return
 	}
+	mode := fileInfo.Mode()
+
+	totalSizeInBytes := fileInfo.Size()
+
+	// Check to see if the file is a block device.
+	if mode&os.ModeDevice != 0 && mode&os.ModeCharDevice == 0 {
+		totalSizeInBytes, err = getDeviceSize(devicePath)
+		if err != nil {
+			return
+		}
+	}
+
+	totalBlocks := totalSizeInBytes / blockSize
+	chunkSize = hashSizeInBlocks * blockSize
+	totalChunks = int(totalBlocks) / (chunkSize / blockSize)
+
+	return
+}
+
+func readBlock(disk *os.File, chunkSize, chunkNum int) ([]byte, error) {
+	buffer := make([]byte, chunkSize)
+	_, err := disk.Seek(int64(chunkSize*chunkNum), 0)
+	if err != nil {
+		return nil, err
+	}
+	_, err = disk.Read(buffer)
+	if err != nil {
+		return nil, err
+	}
+	return buffer, nil
+}
+
+func generateBackupName(vol *Volume, backupType string) string {
+	timestamp := time.Now().UnixMilli()
+	return fmt.Sprintf("%s_%s_%d", vol.name, backupType, timestamp)
 }
 
 func calculateBlockHash(blockData []byte) string {
 	hash := sha256.Sum256(blockData)
 	return hex.EncodeToString(hash[:])
+}
+
+func getDeviceSize(devicePath string) (int64, error) {
+	cmd := exec.Command("blockdev", "--getsize64", devicePath)
+	result, err := cmd.Output()
+	if err != nil {
+		return 0, err
+	}
+
+	return strconv.ParseInt(strings.TrimSpace(string(result)), 10, 64)
 }
