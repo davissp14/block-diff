@@ -5,6 +5,35 @@ import (
 	"time"
 )
 
+type Volume struct {
+	id         int
+	name       string
+	devicePath string
+}
+
+type BackupRecord struct {
+	id          int
+	fileName    string
+	volumeID    int
+	backupType  string
+	totalChunks int
+	chunkSize   int
+	createdAt   time.Time
+}
+
+type Block struct {
+	id        int
+	hash      string
+	createdAt time.Time
+}
+
+type BlockPosition struct {
+	id       int
+	backupID int
+	blockID  int
+	position int
+}
+
 func setupDB(store *sql.DB) error {
 	createVolumesTableSQL := `CREATE TABLE IF NOT EXISTS volumes (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -60,33 +89,15 @@ func setupDB(store *sql.DB) error {
 	return nil
 }
 
-type Volume struct {
-	id         int
-	name       string
-	devicePath string
-}
+func findVolume(store *sql.DB, name string) (Volume, error) {
+	var id int
+	var devicePath string
+	row := store.QueryRow("SELECT id, devicePath FROM volumes WHERE name = ?", name)
+	if err := row.Scan(&id, &devicePath); err != nil {
+		return Volume{}, err
+	}
 
-type BackupRecord struct {
-	id          int
-	fileName    string
-	volumeID    int
-	backupType  string
-	totalChunks int
-	chunkSize   int
-	createdAt   time.Time
-}
-
-type Block struct {
-	id        int
-	hash      string
-	createdAt time.Time
-}
-
-type BlockPosition struct {
-	id       int
-	backupID int
-	blockID  int
-	position int
+	return Volume{id: id, name: name, devicePath: devicePath}, nil
 }
 
 func insertVolume(store *sql.DB, name, devicePath string) (Volume, error) {
@@ -107,17 +118,6 @@ func insertVolume(store *sql.DB, name, devicePath string) (Volume, error) {
 	}
 
 	return Volume{id: int(volumeID), name: name, devicePath: devicePath}, nil
-}
-
-func findVolume(store *sql.DB, name string) (Volume, error) {
-	var id int
-	var devicePath string
-	row := store.QueryRow("SELECT id, devicePath FROM volumes WHERE name = ?", name)
-	if err := row.Scan(&id, &devicePath); err != nil {
-		return Volume{}, err
-	}
-
-	return Volume{id: id, name: name, devicePath: devicePath}, nil
 }
 
 func insertBackupRecord(store *sql.DB, volumeID int, fileName string, backupType string, totalChunks int, chunkSize int) (BackupRecord, error) {
@@ -154,12 +154,12 @@ func queryTotalBlocks(store *sql.DB) (int, error) {
 	return count, nil
 }
 
-func fetchLastFullBackupRecord(store *sql.DB, volumeID int) (BackupRecord, error) {
+func findLastFullBackupRecord(store *sql.DB, volumeID int) (BackupRecord, error) {
 	var id int
-	var fileName string
-	var backupType string
 	var totalChunks int
 	var chunkSize int
+	var fileName string
+	var backupType string
 	var createdAt time.Time
 	row := store.QueryRow("SELECT id, file_name, backup_type, total_chunks, chunk_size, created_at FROM backups WHERE volume_id = ? AND backup_type = 'full' ORDER BY id DESC LIMIT 1", volumeID)
 	if err := row.Scan(&id, &fileName, &backupType, &totalChunks, &chunkSize, &createdAt); err != nil {

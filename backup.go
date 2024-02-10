@@ -15,7 +15,6 @@ import (
 )
 
 const (
-	// assetsDirectory  = "assets"
 	restoreDirectory = "restores"
 	backupDirectory  = "backups"
 	blockSize        = 4096 // Assumes 4k block size
@@ -36,7 +35,7 @@ func Backup(store *sql.DB, vol *Volume) (BackupRecord, error) {
 
 	var backupType string
 
-	fullBackup, err := fetchLastFullBackupRecord(store, vol.id)
+	fullBackup, err := findLastFullBackupRecord(store, vol.id)
 	switch {
 	case err == sql.ErrNoRows:
 		backupType = backupTypeFull
@@ -145,23 +144,20 @@ func calculateBlocks(devicePath string) (chunkSize int, totalChunks int, err err
 	if err != nil {
 		return
 	}
-
-	var totalSizeInBytes int64
 	mode := fileInfo.Mode()
+
+	totalSizeInBytes := fileInfo.Size()
+
 	// Check to see if the file is a block device.
 	if mode&os.ModeDevice != 0 && mode&os.ModeCharDevice == 0 {
 		totalSizeInBytes, err = getDeviceSize(devicePath)
 		if err != nil {
 			return
 		}
-	} else {
-		totalSizeInBytes = fileInfo.Size()
 	}
 
 	totalBlocks := totalSizeInBytes / blockSize
-	// Calculate the chunk size, or the number of blocks we evaluate for a given hash.
 	chunkSize = hashSizeInBlocks * blockSize
-	// Calculate the total chunks
 	totalChunks = int(totalBlocks) / (chunkSize / blockSize)
 
 	return

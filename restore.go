@@ -18,7 +18,7 @@ func Restore(store *sql.DB, backup BackupRecord) error {
 	case backupTypeFull:
 		return restoreFromBackup(store, restoreTarget, backup)
 	case backupTypeDifferential:
-		fullBackup, err := fetchLastFullBackupRecord(store, backup.volumeID)
+		fullBackup, err := findLastFullBackupRecord(store, backup.volumeID)
 		if err != nil {
 			return fmt.Errorf("error fetching last full backup: %w", err)
 		}
