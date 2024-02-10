@@ -4,194 +4,82 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
-	"strings"
 )
 
-func Restore(store *sql.DB, id int) (*os.File, error) {
-	// Query the database for the target digest
-	digest, err := findDigestByID(store, id)
-	if err != nil {
-		return nil, fmt.Errorf("error finding digest by id: %v", err)
-	}
-
-	restoreSourcePath := fmt.Sprintf("%s/%s", backupDirectory, digest.fileName)
-	restoreFileName := fmt.Sprintf("%s.restore", digest.fileName)
-	restorePath := fmt.Sprintf("%s/%s", restoreDirectory, restoreFileName)
-
-	// Create the restore file
+func Restore(store *sql.DB, backup BackupRecord) error {
+	restorePath := fmt.Sprintf("%s/%s.restore", restoreDirectory, backup.fileName)
 	restoreTarget, err := os.OpenFile(restorePath, os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		return nil, fmt.Errorf("error opening restore file: %v", err)
+		return fmt.Errorf("error opening restore file: %v", err)
 	}
 	defer restoreTarget.Close()
 
-	if digest.fullDigest {
-		// Open the file and stream the blocks to the restore file while filling in the empty chunks with zeros.
-		restoreSource, err := os.Open(restoreSourcePath)
+	switch backup.backupType {
+	case backupTypeFull:
+		return restoreFromBackup(store, restoreTarget, backup)
+	case backupTypeDifferential:
+		fullBackup, err := fetchLastFullBackupRecord(store, backup.volumeID)
 		if err != nil {
-			return nil, fmt.Errorf("error opening restore source file: %v", err)
-		}
-		defer restoreSource.Close()
-
-		// Restore the full digest
-		err = restoreFullDigest(restoreSource, restoreTarget, digest)
-		if err != nil {
-			return nil, fmt.Errorf("error restoring full digest: %v", err)
-		}
-	} else {
-		fullDigest, err := lastFullDigest(store)
-		if err != nil {
-			return nil, fmt.Errorf("error finding last full digest: %v", err)
+			return fmt.Errorf("error fetching last full backup: %w", err)
 		}
 
-		// Open the file that holds last full backup.
-		restoreFullSourcePath := fmt.Sprintf("%s/%s", backupDirectory, fullDigest.fileName)
-		restoreFullSource, err := os.Open(restoreFullSourcePath)
-		if err != nil {
-			return nil, fmt.Errorf("error opening full restore source file: %v", err)
-		}
-		defer restoreFullSource.Close()
-
-		// Restore the last full backup
-		err = restoreFullDigest(restoreFullSource, restoreTarget, fullDigest)
-		if err != nil {
-			return nil, fmt.Errorf("error restoring full digest: %v", err)
+		// Restore from the full backup first
+		if err := restoreFromBackup(store, restoreTarget, fullBackup); err != nil {
+			return fmt.Errorf("error restoring from full backup: %w", err)
 		}
 
-		// Open the file that holds last full backup.
-		restorePartialSourcePath := fmt.Sprintf("%s/%s", backupDirectory, digest.fileName)
-		restorePartialSource, err := os.Open(restorePartialSourcePath)
-		if err != nil {
-			return nil, err
-		}
-		defer restoreFullSource.Close()
+		// Layer the differential backup on top
+		return restoreFromBackup(store, restoreTarget, backup)
 
-		err = restorePartialDigest(restorePartialSource, restoreTarget, digest)
-		if err != nil {
-			return nil, fmt.Errorf("error restoring partial digest: %v", err)
-		}
+	default:
+		return fmt.Errorf("backup type %s is not supported", backup.backupType)
 	}
-
-	return restoreTarget, nil
 }
 
-func restoreFullDigest(source *os.File, target *os.File, digest Digest) error {
-	chunkNum := 0
-	emptyChunk := 0
-	for (emptyChunk + chunkNum) < digest.totalChunks {
-		var blockData []byte
-		var err error
-		// If the digest position at chunkNum is an empty position, write a zero chunk.
-		if digest.entries[(chunkNum+emptyChunk)] == "" {
-			emptyChunk++
-			blockData = make([]byte, digest.chunkSize)
-		} else {
-			blockData, err = readBlock(source, digest.chunkSize, chunkNum)
-			if err != nil {
-				return err
-			}
-			chunkNum++
-		}
-
-		// Write blockdata to the restore file
-		_, err = target.Write(blockData)
-		if err != nil {
-			return fmt.Errorf("error writing to restore file: %v", err)
-		}
-	}
-
-	return nil
-}
-
-func restorePartialDigest(source *os.File, target *os.File, digest Digest) error {
-	// Loop through the partial digest entries and restore the blocks
-	for chunkNum, _ := range digest.entries {
-		// Read the block data from the source file
-		blockData, err := readBlock(source, digest.chunkSize, chunkNum)
-		if err != nil {
-			return fmt.Errorf("error reading block data at chunk position %d: %v", chunkNum, err)
-		}
-
-		// Write the block data to the destination file at the chunk position.
-		_, err = target.WriteAt(blockData, int64(chunkNum*digest.chunkSize))
-		if err != nil {
-			return fmt.Errorf("error writing block data to restore file: %v", err)
-		}
-	}
-
-	return nil
-}
-
-func RestoreFile(store *sql.DB, id int) error {
-	// Query the database for the target digest
-	digest, err := findDigestByID(store, id)
+func restoreFromBackup(store *sql.DB, target *os.File, backup BackupRecord) error {
+	sourcePath := fmt.Sprintf("%s/%s", backupDirectory, backup.fileName)
+	source, err := os.Open(sourcePath)
 	if err != nil {
-		return err
+		return fmt.Errorf("error opening restore source file: %v", err)
+	}
+	defer source.Close()
+
+	// Count the total number of unique blocks in the backup
+	var totalUniqueBlocks int
+	row := store.QueryRow("SELECT COUNT(DISTINCT block_id) FROM block_positions WHERE backup_id = ?", backup.id)
+	if err := row.Scan(&totalUniqueBlocks); err != nil {
+		return fmt.Errorf("error counting unique blocks: %w", err)
 	}
 
-	if digest.fullDigest {
-		// open the file and stream the blocks to the restore file while
-		// filling in the empty positions with zeros.
-		backup, err := os.Open(digest.fileName)
+	for chunkNum := 0; chunkNum < totalUniqueBlocks; chunkNum++ {
+		// Read block data from the source file
+		blockData, err := readBlock(source, backup.chunkSize, chunkNum)
 		if err != nil {
-			return err
+			return fmt.Errorf("error reading block at position %d: %w", chunkNum, err)
 		}
-		defer backup.Close()
 
-		// Create the restore file
-		fileSlice := strings.Split(digest.fileName, "/")
-		restoreFileName := fileSlice[len(fileSlice)-1] + ".restore"
+		// Calculate the hash
+		hash := calculateBlockHash(blockData)
 
-		restorePath := fmt.Sprintf("%s/%s", restoreDirectory, restoreFileName)
-		// Create the restore file
-		restoreFile, err := os.OpenFile(restorePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		// Query the database for the block positions tied to the hash
+		rows, err := store.Query("SELECT position from block_positions bp JOIN blocks b ON bp.block_id = b.id where bp.backup_id = ? AND b.hash = ?", backup.id, hash)
 		if err != nil {
-			return fmt.Errorf("error opening restore file: %v", err)
+			return fmt.Errorf("error quering block positions for hash %s: %w", hash, err)
 		}
-		defer restoreFile.Close()
 
-		chunkNum := 0
-		emptyChunk := 0
-		for (emptyChunk + chunkNum) < digest.totalChunks {
-			var blockData []byte
-			// If the digest position at chunkNum is an empty position, write a zero chunk.
-			if digest.entries[(chunkNum+emptyChunk)] == "" {
-				emptyChunk++
-				blockData = []byte(fmt.Sprintf("%d: %s\n", (chunkNum + emptyChunk), zeroByteHash))
-			} else {
-				rawData, err := readBlock(backup, digest.chunkSize, chunkNum)
-				if err != nil {
-					return err
-				}
-				hash := calculateBlockHash(rawData)
-				blockData = []byte(fmt.Sprintf("%d: %s\n", (emptyChunk + chunkNum), hash))
-
-				fmt.Println("Chunk data: ", blockData)
-				// Iterate to the next chunk
-				chunkNum++
+		// Iterate over each block position and write the block data to the restore file
+		for rows.Next() {
+			var position int
+			if err := rows.Scan(&position); err != nil {
+				return fmt.Errorf("failed to scan position: %w", err)
 			}
 
-			// Write blockdata to the restore file
-			_, err = restoreFile.Write(blockData)
+			_, err = target.WriteAt(blockData, int64(position*backup.chunkSize))
 			if err != nil {
 				return fmt.Errorf("error writing to restore file: %v", err)
 			}
 		}
-
-	} else {
-		// parentDigest, err := lastFullDigest(store)
-		// if err != nil {
-		// 	return err
-		// }
-
 	}
-	// Determine whether the digest is a full digest or partial digest
-
-	// If it's a full digest, we can just restore the blocks while filling in
-	// the empty positions with zeros.
-
-	// If it's a partial digest, we need to restore the full digest need to first restore the full digest and
-	// then restore the partial digest.
 
 	return nil
 }
