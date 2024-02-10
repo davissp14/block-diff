@@ -6,6 +6,9 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"os/exec"
+	"strconv"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -143,7 +146,18 @@ func calculateBlocks(devicePath string) (chunkSize int, totalChunks int, err err
 		return
 	}
 
-	totalSizeInBytes := fileInfo.Size()
+	var totalSizeInBytes int64
+	mode := fileInfo.Mode()
+	// Check to see if the file is a block device.
+	if mode&os.ModeDevice != 0 && mode&os.ModeCharDevice == 0 {
+		totalSizeInBytes, err = getDeviceSize(devicePath)
+		if err != nil {
+			return
+		}
+	} else {
+		totalSizeInBytes = fileInfo.Size()
+	}
+
 	totalBlocks := totalSizeInBytes / blockSize
 	// Calculate the chunk size, or the number of blocks we evaluate for a given hash.
 	chunkSize = hashSizeInBlocks * blockSize
@@ -174,4 +188,14 @@ func generateBackupName(vol *Volume, backupType string) string {
 func calculateBlockHash(blockData []byte) string {
 	hash := sha256.Sum256(blockData)
 	return hex.EncodeToString(hash[:])
+}
+
+func getDeviceSize(devicePath string) (int64, error) {
+	cmd := exec.Command("blockdev", "--getsize64", devicePath)
+	result, err := cmd.Output()
+	if err != nil {
+		return 0, err
+	}
+
+	return strconv.ParseInt(strings.TrimSpace(string(result)), 10, 64)
 }
