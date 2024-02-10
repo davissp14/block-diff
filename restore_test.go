@@ -73,11 +73,21 @@ func TestFullRestoreFromDifferential(t *testing.T) {
 	}
 
 	// Perform a differential backup
-	vol.name = "pg_altered.ext4"
+	vol.devicePath = "assets/pg_altered.ext4"
 
 	backup, err := Backup(store, &vol)
 	if err != nil {
 		t.Fatal(err)
+	}
+
+	// Confirm that the differential backup resulted in a block change.
+	positions, err := findBlockPositionsByBackup(store, backup.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(positions) != 1 {
+		t.Fatalf("expected 1 block position, got %d", len(positions))
 	}
 
 	// Perform a full restore
