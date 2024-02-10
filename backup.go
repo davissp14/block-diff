@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	assetsDirectory  = "assets"
+	// assetsDirectory  = "assets"
 	restoreDirectory = "restores"
 	backupDirectory  = "backups"
 	blockSize        = 4096 // Assumes 4k block size
@@ -26,8 +26,7 @@ const (
 )
 
 func Backup(store *sql.DB, vol *Volume) (BackupRecord, error) {
-	devicePath := fmt.Sprintf("%s/%s", assetsDirectory, vol.name)
-	chunkSize, totalChunks, err := calculateBlocks(devicePath)
+	chunkSize, totalChunks, err := calculateBlocks(vol.devicePath)
 	if err != nil {
 		return BackupRecord{}, err
 	}
@@ -52,7 +51,7 @@ func Backup(store *sql.DB, vol *Volume) (BackupRecord, error) {
 		return BackupRecord{}, err
 	}
 
-	dev, err := os.Open(devicePath)
+	dev, err := os.Open(vol.devicePath)
 	if err != nil {
 		return BackupRecord{}, err
 	}

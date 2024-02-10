@@ -9,6 +9,7 @@ func setupDB(store *sql.DB) error {
 	createVolumesTableSQL := `CREATE TABLE IF NOT EXISTS volumes (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		name TEXT NOT NULL,
+		devicePath TEXT NOT NULL,
 		UNIQUE(name)
 	);`
 	_, err := store.Exec(createVolumesTableSQL)
@@ -60,8 +61,9 @@ func setupDB(store *sql.DB) error {
 }
 
 type Volume struct {
-	id   int
-	name string
+	id         int
+	name       string
+	devicePath string
 }
 
 type BackupRecord struct {
@@ -87,10 +89,10 @@ type BlockPosition struct {
 	position int
 }
 
-func insertVolume(store *sql.DB, name string) (Volume, error) {
+func insertVolume(store *sql.DB, name, devicePath string) (Volume, error) {
 	// Write the volume to the database
-	insertSQL := `INSERT INTO volumes (name) VALUES (?) ON CONFLICT DO NOTHING;`
-	res, err := store.Exec(insertSQL, name)
+	insertSQL := `INSERT INTO volumes (name, devicePath) VALUES (?,?) ON CONFLICT DO NOTHING;`
+	res, err := store.Exec(insertSQL, name, devicePath)
 	if err != nil {
 		return Volume{}, err
 	}
@@ -104,17 +106,18 @@ func insertVolume(store *sql.DB, name string) (Volume, error) {
 		return findVolume(store, name)
 	}
 
-	return Volume{id: int(volumeID), name: name}, nil
+	return Volume{id: int(volumeID), name: name, devicePath: devicePath}, nil
 }
 
 func findVolume(store *sql.DB, name string) (Volume, error) {
 	var id int
-	row := store.QueryRow("SELECT id FROM volumes WHERE name = ?", name)
-	if err := row.Scan(&id); err != nil {
+	var devicePath string
+	row := store.QueryRow("SELECT id, devicePath FROM volumes WHERE name = ?", name)
+	if err := row.Scan(&id, &devicePath); err != nil {
 		return Volume{}, err
 	}
 
-	return Volume{id: id, name: name}, nil
+	return Volume{id: id, name: name, devicePath: devicePath}, nil
 }
 
 func insertBackupRecord(store *sql.DB, volumeID int, fileName string, backupType string, totalChunks int, chunkSize int) (BackupRecord, error) {

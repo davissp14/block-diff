@@ -19,7 +19,7 @@ func TestFullRestore(t *testing.T) {
 	setup(store)
 	defer cleanup(t)
 
-	vol, err := insertVolume(store, "pg.ext4")
+	vol, err := insertVolume(store, "pg.ext4", "assets/pg.ext4")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,8 +36,7 @@ func TestFullRestore(t *testing.T) {
 	}
 
 	// Compare the original file with the restored file
-	sourceFileName := fmt.Sprintf("%s/%s", assetsDirectory, vol.name)
-	sourceChecksum, err := fileChecksum(sourceFileName)
+	sourceChecksum, err := fileChecksum(vol.devicePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +62,7 @@ func TestFullRestoreFromDifferential(t *testing.T) {
 	setup(store)
 	defer cleanup(t)
 
-	vol, err := insertVolume(store, "pg.ext4")
+	vol, err := insertVolume(store, "pg.ext4", "assets/pg.ext4")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,8 +86,7 @@ func TestFullRestoreFromDifferential(t *testing.T) {
 	}
 
 	// Compare the original file with the restored file
-	sourceFileName := fmt.Sprintf("%s/%s", assetsDirectory, vol.name)
-	sourceChecksum, err := fileChecksum(sourceFileName)
+	sourceChecksum, err := fileChecksum(vol.devicePath)
 	if err != nil {
 		t.Fatal(err)
 	}

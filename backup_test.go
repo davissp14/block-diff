@@ -43,7 +43,7 @@ func TestFullBackup(t *testing.T) {
 	setup(store)
 	defer cleanup(t)
 
-	vol, err := insertVolume(store, "pg.ext4")
+	vol, err := insertVolume(store, "pg.ext4", "assets/pg.ext4")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestDifferentialBackup(t *testing.T) {
 	setup(store)
 	defer cleanup(t)
 
-	vol, err := insertVolume(store, "pg.ext4")
+	vol, err := insertVolume(store, "pg.ext4", "assets/pg.ext4")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestDifferentialBackupWithChanges(t *testing.T) {
 	setup(store)
 	defer cleanup(t)
 
-	vol, err := insertVolume(store, "pg.ext4")
+	vol, err := insertVolume(store, "pg.ext4", "assets/pg.ext4")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func TestDifferentialBackupWithChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	vol.name = "pg_altered.ext4"
+	vol.devicePath = "assets/pg_altered.ext4"
 
 	differential, err := Backup(store, &vol)
 	if err != nil {
