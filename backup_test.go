@@ -1,15 +1,14 @@
 package block
 
 import (
-	"database/sql"
 	"os"
 	"testing"
 
 	_ "github.com/mattn/go-sqlite3"
 )
 
-func setup(store *sql.DB) {
-	if err := setupDB(store); err != nil {
+func setup(s *Store) {
+	if err := s.SetupDB(); err != nil {
 		panic(err)
 	}
 	if err := os.MkdirAll("backups", 0755); err != nil {
@@ -34,16 +33,13 @@ func cleanup(t *testing.T) {
 
 func TestFullBackup(t *testing.T) {
 	// Setup sqlite connection
-	store, err := sql.Open("sqlite3", "backups.db")
-	if err != nil {
-		t.Fatal(err)
-	}
+	store, err := NewStore()
 	defer store.Close()
 
 	setup(store)
-	defer cleanup(t)
+	// defer cleanup(t)
 
-	vol, err := insertVolume(store, "pg.ext4", "assets/pg.ext4")
+	vol, err := store.InsertVolume("pg.ext4", "assets/pg.ext4")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,23 +49,23 @@ func TestFullBackup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if backupRecord.volumeID != vol.id {
-		t.Errorf("expected volume id to be %d, got %d", vol.id, backupRecord.volumeID)
+	if backupRecord.VolumeID != vol.Id {
+		t.Errorf("expected volume id to be %d, got %d", vol.Id, backupRecord.VolumeID)
 	}
 
-	if backupRecord.backupType != "full" {
-		t.Errorf("expected backup type to be full, got %s", backupRecord.backupType)
+	if backupRecord.BackupType != "full" {
+		t.Errorf("expected backup type to be full, got %s", backupRecord.BackupType)
 	}
 
-	if backupRecord.totalChunks != 50 {
-		t.Errorf("expected total chunks to be 50, got %d", backupRecord.totalChunks)
+	if backupRecord.TotalChunks != 50 {
+		t.Errorf("expected total chunks to be 50, got %d", backupRecord.TotalChunks)
 	}
 
-	if backupRecord.chunkSize != 1048576 {
-		t.Fatalf("expected chunk size to be 1048576, got %d", backupRecord.chunkSize)
+	if backupRecord.ChunkSize != 1048576 {
+		t.Fatalf("expected chunk size to be 1048576, got %d", backupRecord.ChunkSize)
 	}
 
-	positions, err := findBlockPositionsByBackup(store, backupRecord.id)
+	positions, err := store.findBlockPositionsByBackup(backupRecord.Id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +74,7 @@ func TestFullBackup(t *testing.T) {
 		t.Fatalf("expected 50 positions, got %d", len(positions))
 	}
 
-	totalBlocks, err := queryTotalBlocks(store)
+	totalBlocks, err := store.TotalBlocks()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +86,7 @@ func TestFullBackup(t *testing.T) {
 
 func TestDifferentialBackup(t *testing.T) {
 	// Setup sqlite connection
-	store, err := sql.Open("sqlite3", "backups.db")
+	store, err := NewStore()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +95,7 @@ func TestDifferentialBackup(t *testing.T) {
 	setup(store)
 	defer cleanup(t)
 
-	vol, err := insertVolume(store, "pg.ext4", "assets/pg.ext4")
+	vol, err := store.InsertVolume("pg.ext4", "assets/pg.ext4")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,26 +110,26 @@ func TestDifferentialBackup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if backupRecord.volumeID != vol.id {
-		t.Errorf("expected volume id to be %d, got %d", vol.id, backupRecord.volumeID)
+	if backupRecord.VolumeID != vol.Id {
+		t.Errorf("expected volume id to be %d, got %d", vol.Id, backupRecord.VolumeID)
 	}
 
-	if backupRecord.backupType != "differential" {
-		t.Errorf("expected backup type to be differential, got %s", backupRecord.backupType)
+	if backupRecord.BackupType != "differential" {
+		t.Errorf("expected backup type to be differential, got %s", backupRecord.BackupType)
 	}
 
-	if backupRecord.totalChunks != 50 {
-		t.Errorf("expected total chunks to be 50, got %d", backupRecord.totalChunks)
+	if backupRecord.TotalChunks != 50 {
+		t.Errorf("expected total chunks to be 50, got %d", backupRecord.TotalChunks)
 	}
 
-	if backupRecord.chunkSize != 1048576 {
-		t.Fatalf("expected chunk size to be 1048576, got %d", backupRecord.chunkSize)
+	if backupRecord.ChunkSize != 1048576 {
+		t.Fatalf("expected chunk size to be 1048576, got %d", backupRecord.ChunkSize)
 	}
 }
 
 func TestDifferentialBackupWithChanges(t *testing.T) {
 	// Setup sqlite connection
-	store, err := sql.Open("sqlite3", "backups.db")
+	store, err := NewStore()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +138,7 @@ func TestDifferentialBackupWithChanges(t *testing.T) {
 	setup(store)
 	defer cleanup(t)
 
-	vol, err := insertVolume(store, "pg.ext4", "assets/pg.ext4")
+	vol, err := store.InsertVolume("pg.ext4", "assets/pg.ext4")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,14 +148,14 @@ func TestDifferentialBackupWithChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	vol.devicePath = "assets/pg_altered.ext4"
+	vol.DevicePath = "assets/pg_altered.ext4"
 
 	differential, err := Backup(store, &vol)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	positions, err := findBlockPositionsByBackup(store, differential.id)
+	positions, err := store.findBlockPositionsByBackup(differential.Id)
 	if err != nil {
 		t.Fatal(err)
 	}

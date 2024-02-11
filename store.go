@@ -6,18 +6,19 @@ import (
 )
 
 type Volume struct {
-	id         int
-	name       string
-	devicePath string
+	Id         int
+	Name       string
+	DevicePath string
 }
 
 type BackupRecord struct {
-	id          int
-	fileName    string
-	volumeID    int
-	backupType  string
-	totalChunks int
-	chunkSize   int
+	Id          int
+	FileName    string
+	VolumeID    int
+	BackupType  string
+	SizeInBytes int
+	TotalChunks int
+	ChunkSize   int
 	createdAt   time.Time
 }
 
@@ -34,14 +35,18 @@ type BlockPosition struct {
 	position int
 }
 
-func setupDB(store *sql.DB) error {
+type Store struct {
+	*sql.DB
+}
+
+func (s Store) SetupDB() error {
 	createVolumesTableSQL := `CREATE TABLE IF NOT EXISTS volumes (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		name TEXT NOT NULL,
 		devicePath TEXT NOT NULL,
 		UNIQUE(name)
 	);`
-	_, err := store.Exec(createVolumesTableSQL)
+	_, err := s.Exec(createVolumesTableSQL)
 	if err != nil {
 		return err
 	}
@@ -51,12 +56,13 @@ func setupDB(store *sql.DB) error {
 		volume_id INTEGER NOT NULL,
 		file_name TEXT NOT NULL,
 		backup_type TEXT CHECK(backup_type IN ('full', 'differential')) NOT NULL,
+		size_in_bytes INTEGER DEFAULT 0,
 		total_chunks INTEGER NOT NULL,
 		chunk_size INTEGER NOT NULL,
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		FOREIGN KEY(volume_id) REFERENCES volumes(id)
 	);`
-	_, err = store.Exec(createBackupsTableSQL)
+	_, err = s.Exec(createBackupsTableSQL)
 	if err != nil {
 		return err
 	}
@@ -67,7 +73,7 @@ func setupDB(store *sql.DB) error {
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		UNIQUE(hash)
 	);`
-	_, err = store.Exec(createBlocksTableSQL)
+	_, err = s.Exec(createBlocksTableSQL)
 	if err != nil {
 		return err
 	}
@@ -81,7 +87,7 @@ func setupDB(store *sql.DB) error {
 		FOREIGN KEY(block_id) REFERENCES blocks(id)
 		UNIQUE(backup_id, block_id, position)
 	);`
-	_, err = store.Exec(createBlockPositionsSQL)
+	_, err = s.Exec(createBlockPositionsSQL)
 	if err != nil {
 		return err
 	}
@@ -89,21 +95,30 @@ func setupDB(store *sql.DB) error {
 	return nil
 }
 
-func findVolume(store *sql.DB, name string) (Volume, error) {
+func NewStore() (*Store, error) {
+	s, err := sql.Open("sqlite3", "backups.db?_busy_timeout=5000&_journal_mode=WAL")
+	if err != nil {
+		return nil, err
+	}
+
+	return &Store{s}, nil
+}
+
+func (s Store) FindVolume(name string) (Volume, error) {
 	var id int
 	var devicePath string
-	row := store.QueryRow("SELECT id, devicePath FROM volumes WHERE name = ?", name)
+	row := s.QueryRow("SELECT id, devicePath FROM volumes WHERE name = ?", name)
 	if err := row.Scan(&id, &devicePath); err != nil {
 		return Volume{}, err
 	}
 
-	return Volume{id: id, name: name, devicePath: devicePath}, nil
+	return Volume{Id: id, Name: name, DevicePath: devicePath}, nil
 }
 
-func insertVolume(store *sql.DB, name, devicePath string) (Volume, error) {
+func (s Store) InsertVolume(name, devicePath string) (Volume, error) {
 	// Write the volume to the database
 	insertSQL := `INSERT INTO volumes (name, devicePath) VALUES (?,?) ON CONFLICT DO NOTHING;`
-	res, err := store.Exec(insertSQL, name, devicePath)
+	res, err := s.Exec(insertSQL, name, devicePath)
 	if err != nil {
 		return Volume{}, err
 	}
@@ -114,16 +129,16 @@ func insertVolume(store *sql.DB, name, devicePath string) (Volume, error) {
 	}
 
 	if volumeID == 0 {
-		return findVolume(store, name)
+		return s.FindVolume(name)
 	}
 
-	return Volume{id: int(volumeID), name: name, devicePath: devicePath}, nil
+	return Volume{Id: int(volumeID), Name: name, DevicePath: devicePath}, nil
 }
 
-func insertBackupRecord(store *sql.DB, volumeID int, fileName string, backupType string, totalChunks int, chunkSize int) (BackupRecord, error) {
+func (s Store) insertBackupRecord(volumeID int, fileName string, backupType string, totalChunks int, chunkSize int) (BackupRecord, error) {
 	// Write the backup record to the database
 	insertSQL := `INSERT INTO backups (volume_id, file_name, backup_type, total_chunks, chunk_size) VALUES (?,?,?,?,?);`
-	res, err := store.Exec(insertSQL, volumeID, fileName, backupType, totalChunks, chunkSize)
+	res, err := s.Exec(insertSQL, volumeID, fileName, backupType, totalChunks, chunkSize)
 	if err != nil {
 		return BackupRecord{}, err
 	}
@@ -134,19 +149,24 @@ func insertBackupRecord(store *sql.DB, volumeID int, fileName string, backupType
 	}
 
 	return BackupRecord{
-		id:          int(backupID),
-		fileName:    fileName,
-		volumeID:    volumeID,
-		backupType:  backupType,
-		totalChunks: totalChunks,
-		chunkSize:   chunkSize,
+		Id:          int(backupID),
+		FileName:    fileName,
+		VolumeID:    volumeID,
+		BackupType:  backupType,
+		TotalChunks: totalChunks,
+		ChunkSize:   chunkSize,
 		createdAt:   time.Now(),
 	}, nil
 }
 
-func queryTotalBlocks(store *sql.DB) (int, error) {
+func (s Store) updateBackupSize(backupID int, sizeInBytes int) error {
+	_, err := s.Exec("UPDATE backups SET size_in_bytes = ? WHERE id = ?", sizeInBytes, backupID)
+	return err
+}
+
+func (s Store) TotalBlocks() (int, error) {
 	var count int
-	row := store.QueryRow("SELECT count(*) FROM blocks;")
+	row := s.QueryRow("SELECT count(*) FROM blocks;")
 	if err := row.Scan(&count); err != nil {
 		return -1, err
 	}
@@ -154,33 +174,33 @@ func queryTotalBlocks(store *sql.DB) (int, error) {
 	return count, nil
 }
 
-func findLastFullBackupRecord(store *sql.DB, volumeID int) (BackupRecord, error) {
+func (s Store) findLastFullBackupRecord(volumeID int) (BackupRecord, error) {
 	var id int
 	var totalChunks int
 	var chunkSize int
 	var fileName string
 	var backupType string
 	var createdAt time.Time
-	row := store.QueryRow("SELECT id, file_name, backup_type, total_chunks, chunk_size, created_at FROM backups WHERE volume_id = ? AND backup_type = 'full' ORDER BY id DESC LIMIT 1", volumeID)
+	row := s.QueryRow("SELECT id, file_name, backup_type, total_chunks, chunk_size, created_at FROM backups WHERE volume_id = ? AND backup_type = 'full' ORDER BY id DESC LIMIT 1", volumeID)
 	if err := row.Scan(&id, &fileName, &backupType, &totalChunks, &chunkSize, &createdAt); err != nil {
 		return BackupRecord{}, err
 	}
 
 	return BackupRecord{
-		id:          id,
-		fileName:    fileName,
-		volumeID:    volumeID,
-		backupType:  backupType,
-		totalChunks: totalChunks,
-		chunkSize:   chunkSize,
+		Id:          id,
+		FileName:    fileName,
+		VolumeID:    volumeID,
+		BackupType:  backupType,
+		TotalChunks: totalChunks,
+		ChunkSize:   chunkSize,
 		createdAt:   createdAt,
 	}, nil
 }
 
-func insertBlockPosition(store *sql.DB, backupID int, blockID int, position int) (BlockPosition, error) {
+func (s Store) insertBlockPosition(backupID int, blockID int, position int) (BlockPosition, error) {
 	// Upsert the block position into the database
 	insertSQL := `INSERT INTO block_positions (backup_id, block_id, position) VALUES (?,?,?);`
-	res, err := store.Exec(insertSQL, backupID, blockID, position)
+	res, err := s.Exec(insertSQL, backupID, blockID, position)
 	if err != nil {
 		return BlockPosition{}, err
 	}
@@ -198,9 +218,9 @@ func insertBlockPosition(store *sql.DB, backupID int, blockID int, position int)
 	}, nil
 }
 
-func findBlockPositionsByBackup(store *sql.DB, backupID int) ([]BlockPosition, error) {
+func (s Store) findBlockPositionsByBackup(backupID int) ([]BlockPosition, error) {
 	var positions []BlockPosition
-	rows, err := store.Query("SELECT id, position, block_id FROM block_positions WHERE backup_id = ?;", backupID)
+	rows, err := s.Query("SELECT id, position, block_id FROM block_positions WHERE backup_id = ?;", backupID)
 	if err != nil {
 		return nil, err
 	}
@@ -224,8 +244,8 @@ func findBlockPositionsByBackup(store *sql.DB, backupID int) ([]BlockPosition, e
 	return positions, nil
 }
 
-func insertBlock(store *sql.DB, hash string) (*Block, error) {
-	block, err := findBlock(store, hash)
+func (s Store) insertBlock(hash string) (*Block, error) {
+	block, err := s.findBlock(hash)
 	if err != nil {
 		return nil, err
 	}
@@ -235,7 +255,7 @@ func insertBlock(store *sql.DB, hash string) (*Block, error) {
 	}
 	// Write the block to the database
 	insertSQL := `INSERT INTO blocks (hash) VALUES (?) ON CONFLICT DO NOTHING;`
-	res, err := store.Exec(insertSQL, hash)
+	res, err := s.Exec(insertSQL, hash)
 	if err != nil {
 		return nil, err
 	}
@@ -253,10 +273,10 @@ func insertBlock(store *sql.DB, hash string) (*Block, error) {
 
 }
 
-func findBlock(store *sql.DB, hash string) (*Block, error) {
+func (s Store) findBlock(hash string) (*Block, error) {
 	var id int
 	var createdAt time.Time
-	row := store.QueryRow("SELECT id, created_at FROM blocks WHERE hash = ?", hash)
+	row := s.QueryRow("SELECT id, created_at FROM blocks WHERE hash = ?", hash)
 	err := row.Scan(&id, &createdAt)
 	switch {
 	case err == sql.ErrNoRows:
@@ -268,9 +288,19 @@ func findBlock(store *sql.DB, hash string) (*Block, error) {
 	return &Block{id: id, hash: hash, createdAt: createdAt}, nil
 }
 
-func findBlockAtPosition(store *sql.DB, backupID int, pos int) (*Block, error) {
+func (s Store) UniqueBlocksInBackup(backupID int) (int, error) {
+	var count int
+	row := s.QueryRow("SELECT COUNT(DISTINCT block_id) FROM block_positions WHERE backup_id = ?", backupID)
+	if err := row.Scan(&count); err != nil {
+		return -1, err
+	}
+
+	return count, nil
+}
+
+func (s Store) findBlockAtPosition(backupID int, pos int) (*Block, error) {
 	var hash string
-	row := store.QueryRow("SELECT hash FROM blocks b JOIN block_positions bp ON bp.block_id = b.id WHERE bp.backup_id = ? AND bp.position = ?", backupID, pos)
+	row := s.QueryRow("SELECT hash FROM blocks b JOIN block_positions bp ON bp.block_id = b.id WHERE bp.backup_id = ? AND bp.position = ?", backupID, pos)
 	err := row.Scan(&hash)
 	switch {
 	case err == sql.ErrNoRows:

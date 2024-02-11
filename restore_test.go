@@ -2,7 +2,6 @@ package block
 
 import (
 	"crypto/sha256"
-	"database/sql"
 	"fmt"
 	"io"
 	"os"
@@ -10,7 +9,7 @@ import (
 )
 
 func TestFullRestore(t *testing.T) {
-	store, err := sql.Open("sqlite3", "backups.db")
+	store, err := NewStore()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -19,7 +18,7 @@ func TestFullRestore(t *testing.T) {
 	setup(store)
 	defer cleanup(t)
 
-	vol, err := insertVolume(store, "pg.ext4", "assets/pg.ext4")
+	vol, err := store.InsertVolume("pg.ext4", "assets/pg.ext4")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,12 +35,12 @@ func TestFullRestore(t *testing.T) {
 	}
 
 	// Compare the original file with the restored file
-	sourceChecksum, err := fileChecksum(vol.devicePath)
+	sourceChecksum, err := fileChecksum(vol.DevicePath)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	restoreFilePath := fmt.Sprintf("%s/%s", restoreDirectory, backup.fileName+".restore")
+	restoreFilePath := fmt.Sprintf("%s/%s", restoreDirectory, backup.FileName+".restore")
 	targetChecksum, err := fileChecksum(restoreFilePath)
 	if err != nil {
 		t.Fatal(err)
@@ -53,7 +52,7 @@ func TestFullRestore(t *testing.T) {
 }
 
 func TestFullRestoreFromDifferential(t *testing.T) {
-	store, err := sql.Open("sqlite3", "backups.db")
+	store, err := NewStore()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +61,7 @@ func TestFullRestoreFromDifferential(t *testing.T) {
 	setup(store)
 	defer cleanup(t)
 
-	vol, err := insertVolume(store, "pg.ext4", "assets/pg.ext4")
+	vol, err := store.InsertVolume("pg.ext4", "assets/pg.ext4")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +72,7 @@ func TestFullRestoreFromDifferential(t *testing.T) {
 	}
 
 	// Perform a differential backup
-	vol.devicePath = "assets/pg_altered.ext4"
+	vol.DevicePath = "assets/pg_altered.ext4"
 
 	backup, err := Backup(store, &vol)
 	if err != nil {
@@ -81,7 +80,7 @@ func TestFullRestoreFromDifferential(t *testing.T) {
 	}
 
 	// Confirm that the differential backup resulted in a block change.
-	positions, err := findBlockPositionsByBackup(store, backup.id)
+	positions, err := store.findBlockPositionsByBackup(backup.Id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,12 +95,12 @@ func TestFullRestoreFromDifferential(t *testing.T) {
 	}
 
 	// Compare the original file with the restored file
-	sourceChecksum, err := fileChecksum(vol.devicePath)
+	sourceChecksum, err := fileChecksum(vol.DevicePath)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	restoreFilePath := fmt.Sprintf("%s/%s", restoreDirectory, backup.fileName+".restore")
+	restoreFilePath := fmt.Sprintf("%s/%s", restoreDirectory, backup.FileName+".restore")
 	targetChecksum, err := fileChecksum(restoreFilePath)
 	if err != nil {
 		t.Fatal(err)
