@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"strings"
 	"time"
@@ -34,7 +35,7 @@ var backupCmd = &cobra.Command{
 		outputDirPath, err := cmd.Flags().GetString("output-dir")
 		if err != nil || outputDirPath == "" {
 			fmt.Println("No output directory specified. Saving backup file to current directory.")
-			outputDirPath = "./"
+			outputDirPath = "."
 		}
 		if err := performBackup(devicePath, outputDirPath); err != nil {
 			fmt.Println(err)
@@ -118,20 +119,24 @@ func listBackups() error {
 	return nil
 }
 
-var sizes = []string{"B", "kiB", "MiB", "GiB", "TiB"}
+var sizes = []string{"B", "KiB", "MiB", "GiB", "TiB"}
 
 func formatFileSize(size float64) string {
 	unitLimit := len(sizes)
+	base := 1024.0
 	i := 0
-	for size >= 1024 && i < unitLimit {
+	for size >= base && i < unitLimit {
 		size = size / 1024
 		i++
 	}
 
-	f := "%.0f %s"
-	if i > 1 {
-		f = "%.2f %s"
+	if i == 0 {
+		return fmt.Sprintf("%.f%s", size, sizes[i])
 	}
 
-	return fmt.Sprintf(f, size, sizes[i])
+	if math.Mod(size, 1024) <= 1.0 {
+		return fmt.Sprintf("%.1f%s", size, sizes[i])
+	}
+
+	return fmt.Sprintf("%.2f%s", size, sizes[i])
 }
