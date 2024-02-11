@@ -159,7 +159,7 @@ func calculateBlocks(devicePath string) (chunkSize int, totalChunks int, err err
 
 	// Check to see if the file is a block device.
 	if mode&os.ModeDevice != 0 && mode&os.ModeCharDevice == 0 {
-		totalSizeInBytes, err = getDeviceSize(devicePath)
+		totalSizeInBytes, err = GetBlockDeviceSize(devicePath)
 		if err != nil {
 			return
 		}
@@ -195,7 +195,7 @@ func calculateBlockHash(blockData []byte) string {
 	return hex.EncodeToString(hash[:])
 }
 
-func getDeviceSize(devicePath string) (int64, error) {
+func GetBlockDeviceSize(devicePath string) (int64, error) {
 	cmd := exec.Command("blockdev", "--getsize64", devicePath)
 	result, err := cmd.Output()
 	if err != nil {
