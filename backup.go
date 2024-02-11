@@ -27,15 +27,15 @@ const (
 	backupTypeFull         = "full"
 )
 
-func Backup(store *sql.DB, vol *Volume) (BackupRecord, error) {
-	chunkSize, totalChunks, err := calculateBlocks(vol.devicePath)
+func Backup(store *Store, vol *Volume) (BackupRecord, error) {
+	chunkSize, totalChunks, err := calculateBlocks(vol.DevicePath)
 	if err != nil {
 		return BackupRecord{}, err
 	}
 
 	var backupType string
 
-	fullBackup, err := findLastFullBackupRecord(store, vol.id)
+	fullBackup, err := store.findLastFullBackupRecord(vol.Id)
 	switch {
 	case err == sql.ErrNoRows:
 		backupType = backupTypeFull
@@ -48,12 +48,12 @@ func Backup(store *sql.DB, vol *Volume) (BackupRecord, error) {
 	// Create the backup record
 	// TODO - Consider storing a checksum of the target volume, so we can verify at restore time.
 	backupFileName := generateBackupName(vol, backupType)
-	backup, err := insertBackupRecord(store, vol.id, backupFileName, backupType, totalChunks, chunkSize)
+	backup, err := store.insertBackupRecord(vol.Id, backupFileName, backupType, totalChunks, chunkSize)
 	if err != nil {
 		return BackupRecord{}, err
 	}
 
-	dev, err := os.Open(vol.devicePath)
+	dev, err := os.Open(vol.DevicePath)
 	if err != nil {
 		return BackupRecord{}, err
 	}
@@ -70,13 +70,13 @@ func Backup(store *sql.DB, vol *Volume) (BackupRecord, error) {
 
 		hash := calculateBlockHash(blockData)
 
-		block, err := insertBlock(store, hash)
+		block, err := store.insertBlock(hash)
 		if err != nil {
 			return BackupRecord{}, err
 		}
 
-		if backup.backupType == backupTypeDifferential {
-			refBlock, err := findBlockAtPosition(store, fullBackup.id, chunkNum)
+		if backup.BackupType == backupTypeDifferential {
+			refBlock, err := store.findBlockAtPosition(fullBackup.Id, chunkNum)
 			if err != nil && err != sql.ErrNoRows {
 				return BackupRecord{}, err
 			}
@@ -87,21 +87,21 @@ func Backup(store *sql.DB, vol *Volume) (BackupRecord, error) {
 			}
 
 			if refBlock == nil {
-				if _, err := insertBlockPosition(store, backup.id, block.id, chunkNum); err != nil {
+				if _, err := store.insertBlockPosition(backup.Id, block.id, chunkNum); err != nil {
 					return BackupRecord{}, err
 				}
 				continue
 			}
 		}
 
-		_, err = insertBlockPosition(store, backup.id, block.id, chunkNum)
+		_, err = store.insertBlockPosition(backup.Id, block.id, chunkNum)
 		if err != nil {
 			return BackupRecord{}, err
 		}
 	}
 
 	// Create and open up the backup file for writing.
-	backupPath := fmt.Sprintf("%s/%s", backupDirectory, backup.fileName)
+	backupPath := fmt.Sprintf("%s/%s", backupDirectory, backup.FileName)
 	backupTarget, err := os.OpenFile(backupPath, os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return backup, fmt.Errorf("error opening restore file: %v", err)
@@ -110,11 +110,12 @@ func Backup(store *sql.DB, vol *Volume) (BackupRecord, error) {
 
 	// Query sqlite for only the blocks that need to be backed up.
 	// TODO - Flag zero block hashes, so we can exclude it.
-	rows, err := store.Query("SELECT block_id, MIN(position) AS position FROM block_positions where backup_id = ? GROUP BY block_id ORDER BY block_id;", backup.id)
+	rows, err := store.Query("SELECT block_id, MIN(position) AS position FROM block_positions where backup_id = ? GROUP BY block_id ORDER BY block_id;", backup.Id)
 	if err != nil {
 		return backup, err
 	}
 
+	totalBytesWritten := 0
 	// Iterate over each resolved block position and write the block data for that position to the backup file.
 	for rows.Next() {
 		var blockID int
@@ -133,7 +134,15 @@ func Backup(store *sql.DB, vol *Volume) (BackupRecord, error) {
 		if err != nil {
 			return backup, fmt.Errorf("error writing to backup file: %v", err)
 		}
+
+		totalBytesWritten += len(blockData)
 	}
+
+	if err := store.updateBackupSize(backup.Id, totalBytesWritten); err != nil {
+		return backup, err
+	}
+
+	backup.SizeInBytes = totalBytesWritten
 
 	return backup, nil
 }
@@ -150,7 +159,7 @@ func calculateBlocks(devicePath string) (chunkSize int, totalChunks int, err err
 
 	// Check to see if the file is a block device.
 	if mode&os.ModeDevice != 0 && mode&os.ModeCharDevice == 0 {
-		totalSizeInBytes, err = getDeviceSize(devicePath)
+		totalSizeInBytes, err = GetBlockDeviceSize(devicePath)
 		if err != nil {
 			return
 		}
@@ -178,7 +187,7 @@ func readBlock(disk *os.File, chunkSize, chunkNum int) ([]byte, error) {
 
 func generateBackupName(vol *Volume, backupType string) string {
 	timestamp := time.Now().UnixMilli()
-	return fmt.Sprintf("%s_%s_%d", vol.name, backupType, timestamp)
+	return fmt.Sprintf("%s_%s_%d", vol.Name, backupType, timestamp)
 }
 
 func calculateBlockHash(blockData []byte) string {
@@ -186,7 +195,7 @@ func calculateBlockHash(blockData []byte) string {
 	return hex.EncodeToString(hash[:])
 }
 
-func getDeviceSize(devicePath string) (int64, error) {
+func GetBlockDeviceSize(devicePath string) (int64, error) {
 	cmd := exec.Command("blockdev", "--getsize64", devicePath)
 	result, err := cmd.Output()
 	if err != nil {
