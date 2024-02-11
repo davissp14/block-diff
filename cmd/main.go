@@ -96,20 +96,17 @@ func performBackup(devicePath string) error {
 		return fmt.Errorf("error getting device size: %v", err)
 	}
 
-	deviceSizeInMib := deviceSize / 1024 / 1024
-	backupSizeInMib := backupRecord.SizeInBytes / 1024 / 1024
-
-	sizeDiff := (int(deviceSize) - backupRecord.SizeInBytes) / 1024 / 1024
+	sizeDiff := (int(deviceSize) - backupRecord.SizeInBytes)
 
 	fmt.Println("Backup completed successfully!")
 	fmt.Println("=============Info=================")
 	fmt.Printf("Backup duration: %s\n", diff)
 	fmt.Printf("Backup file: %s\n", backupRecord.FileName)
-	fmt.Printf("Backup size %d mb\n", backupSizeInMib)
+	fmt.Printf("Backup size %d bytes\n", backupRecord.SizeInBytes)
 	fmt.Printf("Blocks evaluated: %d\n", backupRecord.TotalChunks)
 	fmt.Printf("Blocks written: %d\n", uniqueBlocks)
-	fmt.Printf("Source device size: %d mb\n", deviceSizeInMib)
-	fmt.Printf("Space saved: %d mb\n", sizeDiff)
+	fmt.Printf("Source device size: %d bytes\n", deviceSize)
+	fmt.Printf("Space saved: %d bytes\n", sizeDiff)
 	fmt.Println("==================================")
 
 	return nil
