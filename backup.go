@@ -27,7 +27,7 @@ const (
 	backupTypeFull         = "full"
 )
 
-func Backup(store *Store, vol *Volume) (BackupRecord, error) {
+func Backup(store *Store, vol *Volume, outputPath string) (BackupRecord, error) {
 	chunkSize, totalChunks, err := calculateBlocks(vol.DevicePath)
 	if err != nil {
 		return BackupRecord{}, err
@@ -47,8 +47,7 @@ func Backup(store *Store, vol *Volume) (BackupRecord, error) {
 
 	// Create the backup record
 	// TODO - Consider storing a checksum of the target volume, so we can verify at restore time.
-	backupFileName := generateBackupName(vol, backupType)
-	backup, err := store.insertBackupRecord(vol.Id, backupFileName, backupType, totalChunks, chunkSize)
+	backup, err := store.insertBackupRecord(vol.Id, generateBackupName(vol, backupType), backupType, totalChunks, chunkSize)
 	if err != nil {
 		return BackupRecord{}, err
 	}
@@ -101,7 +100,7 @@ func Backup(store *Store, vol *Volume) (BackupRecord, error) {
 	}
 
 	// Create and open up the backup file for writing.
-	backupPath := fmt.Sprintf("%s/%s", backupDirectory, backup.FileName)
+	backupPath := fmt.Sprintf("%s/%s", outputPath, backup.FileName)
 	backupTarget, err := os.OpenFile(backupPath, os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return backup, fmt.Errorf("error opening restore file: %v", err)

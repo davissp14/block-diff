@@ -44,7 +44,7 @@ func TestFullBackup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	backupRecord, err := Backup(store, &vol)
+	backupRecord, err := Backup(store, &vol, "backups/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,12 +100,12 @@ func TestDifferentialBackup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = Backup(store, &vol)
+	_, err = Backup(store, &vol, "backups/")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	backupRecord, err := Backup(store, &vol)
+	backupRecord, err := Backup(store, &vol, "backups/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,14 +143,14 @@ func TestDifferentialBackupWithChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = Backup(store, &vol)
+	_, err = Backup(store, &vol, "backups/")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	vol.DevicePath = "assets/pg_altered.ext4"
 
-	differential, err := Backup(store, &vol)
+	differential, err := Backup(store, &vol, "backups/")
 	if err != nil {
 		t.Fatal(err)
 	}

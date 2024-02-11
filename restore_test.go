@@ -24,7 +24,7 @@ func TestFullRestore(t *testing.T) {
 	}
 
 	// Perform full backup
-	backup, err := Backup(store, &vol)
+	backup, err := Backup(store, &vol, "backups/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,14 +67,14 @@ func TestFullRestoreFromDifferential(t *testing.T) {
 	}
 
 	// Perform full backup
-	if _, err = Backup(store, &vol); err != nil {
+	if _, err = Backup(store, &vol, "backups/"); err != nil {
 		t.Fatal(err)
 	}
 
 	// Perform a differential backup
 	vol.DevicePath = "assets/pg_altered.ext4"
 
-	backup, err := Backup(store, &vol)
+	backup, err := Backup(store, &vol, "backups/")
 	if err != nil {
 		t.Fatal(err)
 	}
