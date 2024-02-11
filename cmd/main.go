@@ -103,10 +103,10 @@ func performBackup(devicePath string) error {
 	fmt.Printf("Backup duration: %s\n", diff)
 	fmt.Printf("Backup file: %s\n", backupRecord.FileName)
 	fmt.Printf("Backup size %d bytes\n", backupRecord.SizeInBytes)
+	fmt.Printf("Device size: %d bytes\n", deviceSize)
+	fmt.Printf("Space saved: %d bytes\n", sizeDiff)
 	fmt.Printf("Blocks evaluated: %d\n", backupRecord.TotalChunks)
 	fmt.Printf("Blocks written: %d\n", uniqueBlocks)
-	fmt.Printf("Source device size: %d bytes\n", deviceSize)
-	fmt.Printf("Space saved: %d bytes\n", sizeDiff)
 	fmt.Println("==================================")
 
 	return nil
