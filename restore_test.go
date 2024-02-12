@@ -24,13 +24,19 @@ func TestFullRestore(t *testing.T) {
 	}
 
 	// Perform full backup
-	backup, err := Backup(store, &vol, "backups/")
+
+	b, err := NewBackup(store, &vol, "backups/")
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	// Perform full backup
+	if err := b.Run(); err != nil {
+		t.Fatal(err)
+	}
+
 	// Perform full restore
-	if err := Restore(store, backup); err != nil {
+	if err := Restore(store, *b.Record); err != nil {
 		t.Fatal(err)
 	}
 
@@ -40,7 +46,7 @@ func TestFullRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	restoreFilePath := fmt.Sprintf("%s/%s", restoreDirectory, backup.FileName+".restore")
+	restoreFilePath := fmt.Sprintf("%s/%s", restoreDirectory, b.Record.FileName+".restore")
 	targetChecksum, err := fileChecksum(restoreFilePath)
 	if err != nil {
 		t.Fatal(err)
@@ -66,21 +72,29 @@ func TestFullRestoreFromDifferential(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Perform full backup
-	if _, err = Backup(store, &vol, "backups/"); err != nil {
+	b, err := NewBackup(store, &vol, "backups/")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := b.Run(); err != nil {
 		t.Fatal(err)
 	}
 
 	// Perform a differential backup
 	vol.DevicePath = "assets/pg_altered.ext4"
 
-	backup, err := Backup(store, &vol, "backups/")
+	db, err := NewBackup(store, &vol, "backups/")
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	if err := db.Run(); err != nil {
+		t.Fatal(err)
+	}
+
 	// Confirm that the differential backup resulted in a block change.
-	positions, err := store.findBlockPositionsByBackup(backup.Id)
+	positions, err := store.findBlockPositionsByBackup(db.Record.Id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +104,7 @@ func TestFullRestoreFromDifferential(t *testing.T) {
 	}
 
 	// Perform a full restore
-	if err := Restore(store, backup); err != nil {
+	if err := Restore(store, *db.Record); err != nil {
 		t.Fatal(err)
 	}
 
@@ -100,7 +114,7 @@ func TestFullRestoreFromDifferential(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	restoreFilePath := fmt.Sprintf("%s/%s", restoreDirectory, backup.FileName+".restore")
+	restoreFilePath := fmt.Sprintf("%s/%s", restoreDirectory, db.Record.FileName+".restore")
 	targetChecksum, err := fileChecksum(restoreFilePath)
 	if err != nil {
 		t.Fatal(err)

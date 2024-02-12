@@ -50,28 +50,32 @@ func TestFullBackup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	backupRecord, err := Backup(store, &vol, "backups/")
+	b, err := NewBackup(store, &vol, "backups/")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if backupRecord.VolumeID != vol.Id {
-		t.Errorf("expected volume id to be %d, got %d", vol.Id, backupRecord.VolumeID)
+	if err := b.Run(); err != nil {
+		t.Fatal(err)
 	}
 
-	if backupRecord.BackupType != "full" {
-		t.Errorf("expected backup type to be full, got %s", backupRecord.BackupType)
+	if b.Record.VolumeID != vol.Id {
+		t.Errorf("expected volume id to be %d, got %d", vol.Id, b.Record.VolumeID)
 	}
 
-	if backupRecord.TotalChunks != 50 {
-		t.Errorf("expected total chunks to be 50, got %d", backupRecord.TotalChunks)
+	if b.Record.BackupType != "full" {
+		t.Errorf("expected backup type to be full, got %s", b.Record.BackupType)
 	}
 
-	if backupRecord.ChunkSize != 1048576 {
-		t.Fatalf("expected chunk size to be 1048576, got %d", backupRecord.ChunkSize)
+	if b.TotalChunks() != 50 {
+		t.Errorf("expected total chunks to be 50, got %d", b.TotalChunks())
 	}
 
-	positions, err := store.findBlockPositionsByBackup(backupRecord.Id)
+	if b.Record.ChunkSize != 1048576 {
+		t.Fatalf("expected chunk size to be 1048576, got %d", b.Record.ChunkSize)
+	}
+
+	positions, err := store.findBlockPositionsByBackup(b.Record.Id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,30 +110,38 @@ func TestDifferentialBackup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = Backup(store, &vol, "backups/")
+	b, err := NewBackup(store, &vol, "backups/")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	backupRecord, err := Backup(store, &vol, "backups/")
+	if err := b.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := NewBackup(store, &vol, "backups/")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if backupRecord.VolumeID != vol.Id {
-		t.Errorf("expected volume id to be %d, got %d", vol.Id, backupRecord.VolumeID)
+	if err := db.Run(); err != nil {
+		t.Fatal(err)
 	}
 
-	if backupRecord.BackupType != "differential" {
-		t.Errorf("expected backup type to be differential, got %s", backupRecord.BackupType)
+	if db.Record.VolumeID != vol.Id {
+		t.Errorf("expected volume id to be %d, got %d", vol.Id, db.Record.VolumeID)
 	}
 
-	if backupRecord.TotalChunks != 50 {
-		t.Errorf("expected total chunks to be 50, got %d", backupRecord.TotalChunks)
+	if db.Record.BackupType != "differential" {
+		t.Errorf("expected backup type to be differential, got %s", db.Record.BackupType)
 	}
 
-	if backupRecord.ChunkSize != 1048576 {
-		t.Fatalf("expected chunk size to be 1048576, got %d", backupRecord.ChunkSize)
+	if db.Record.TotalChunks != 50 {
+		t.Errorf("expected total chunks to be 50, got %d", db.Record.TotalChunks)
+	}
+
+	if db.Record.ChunkSize != 1048576 {
+		t.Fatalf("expected chunk size to be 1048576, got %d", db.Record.ChunkSize)
 	}
 }
 
@@ -149,19 +161,27 @@ func TestDifferentialBackupWithChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = Backup(store, &vol, "backups/")
+	b, err := NewBackup(store, &vol, "backups/")
 	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := b.Run(); err != nil {
 		t.Fatal(err)
 	}
 
 	vol.DevicePath = "assets/pg_altered.ext4"
 
-	differential, err := Backup(store, &vol, "backups/")
+	db, err := NewBackup(store, &vol, "backups/")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	positions, err := store.findBlockPositionsByBackup(differential.Id)
+	if err := db.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	positions, err := store.findBlockPositionsByBackup(db.Record.Id)
 	if err != nil {
 		t.Fatal(err)
 	}

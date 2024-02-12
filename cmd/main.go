@@ -80,16 +80,19 @@ func performBackup(devicePath, outputPath string) error {
 
 	fmt.Printf("Performing backup on device: %s\n", devicePath)
 
-	startTime := time.Now()
-	backup, err := block.Backup(store, &vol, outputPath)
+	b, err := block.NewBackup(store, &vol, outputPath)
 	if err != nil {
+		return fmt.Errorf("error creating backup: %v", err)
+	}
+	startTime := time.Now()
+	if err := b.Run(); err != nil {
 		return fmt.Errorf("error performing backup: %v", err)
 	}
 	endTime := time.Now()
 	//calculate the difference
 	diff := endTime.Sub(startTime)
 
-	uniqueBlocks, err := store.UniqueBlocksInBackup(backup.Id)
+	uniqueBlocks, err := store.UniqueBlocksInBackup(b.Record.Id)
 	if err != nil {
 		return fmt.Errorf("error getting unique blocks: %v", err)
 	}
@@ -99,16 +102,15 @@ func performBackup(devicePath, outputPath string) error {
 		return fmt.Errorf("error getting device size: %v", err)
 	}
 
-	sizeDiff := (int(deviceSize) - backup.SizeInBytes)
-
+	sizeDiff := (int(deviceSize) - b.Record.SizeInBytes)
 	fmt.Println("Backup completed successfully!")
 	fmt.Println("=============Info=================")
 	fmt.Printf("Backup duration: %s\n", diff)
-	fmt.Printf("Backup file: %s/%s\n", outputPath, backup.FileName)
-	fmt.Printf("Backup size %s\n", formatFileSize(float64(backup.SizeInBytes)))
+	fmt.Printf("Backup file: %s/%s\n", outputPath, b.Record.FileName)
+	fmt.Printf("Backup size %s\n", formatFileSize(float64(b.Record.SizeInBytes)))
 	fmt.Printf("Source device size: %s\n", formatFileSize(float64(deviceSize)))
 	fmt.Printf("Space saved: %s\n", formatFileSize(float64(sizeDiff)))
-	fmt.Printf("Blocks evaluated: %d\n", backup.TotalChunks)
+	fmt.Printf("Blocks evaluated: %d\n", b.TotalChunks())
 	fmt.Printf("Blocks written: %d\n", uniqueBlocks)
 	fmt.Println("==================================")
 
