@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -17,17 +19,17 @@ import (
 const (
 	restoreDirectory = "restores"
 	backupDirectory  = "backups"
-	blockSize        = 4096 // Assumes 4k block size
-
+	blockSize        = 4096
 	// hashSizeInBlocks is the number of blocks we evaluate for a given hash.
-	// A higher number will result in lower differential backup granularity and lower storage overhead.
 	hashSizeInBlocks = 256
+	// hashBufferSize is the number of chunks we buffer before writing to the database.
+	hashBufferBlockSize = 10
 
 	backupTypeDifferential = "differential"
 	backupTypeFull         = "full"
 )
 
-func Backup(store *Store, vol *Volume) (BackupRecord, error) {
+func Backup(store *Store, vol *Volume, outputPath string) (BackupRecord, error) {
 	chunkSize, totalChunks, err := calculateBlocks(vol.DevicePath)
 	if err != nil {
 		return BackupRecord{}, err
@@ -47,8 +49,7 @@ func Backup(store *Store, vol *Volume) (BackupRecord, error) {
 
 	// Create the backup record
 	// TODO - Consider storing a checksum of the target volume, so we can verify at restore time.
-	backupFileName := generateBackupName(vol, backupType)
-	backup, err := store.insertBackupRecord(vol.Id, backupFileName, backupType, totalChunks, chunkSize)
+	backup, err := store.insertBackupRecord(vol.Id, generateBackupName(vol, backupType), backupType, totalChunks, chunkSize)
 	if err != nil {
 		return BackupRecord{}, err
 	}
@@ -59,49 +60,145 @@ func Backup(store *Store, vol *Volume) (BackupRecord, error) {
 	}
 	defer dev.Close()
 
-	// TODO - Figure out a good way to batch these inserts.
+	// Create a buffer to store the block hashes.
+	// The number of hashes we buffer before writing to the database.
+	bufSize := hashBufferBlockSize * hashSizeInBlocks * blockSize
 
-	// Create a block digest for the device.
-	for chunkNum := 0; chunkNum < totalChunks; chunkNum++ {
-		blockData, err := readBlock(dev, chunkSize, chunkNum)
+	// The number of individual chunks we can store in the buffer.
+	bufferChunks := bufSize / (hashSizeInBlocks * blockSize)
+
+	if totalChunks%bufferChunks != 0 {
+		return BackupRecord{}, fmt.Errorf("bufferChunks: %d is not a multiple of totalChunks: %d", bufferChunks, totalChunks)
+	}
+
+	// The current iteration we are on.
+	iteration := 0
+
+	// Read chunks until we have enough to fill the buffer.
+	for iteration*bufferChunks < totalChunks {
+
+		// Create a buffer to store the block hashes.
+		hashBuffer := make([]byte, 0, bufSize)
+
+		// Read chunks until we have enough to fill the buffer.
+		for chunkNum := 0; chunkNum < bufferChunks; chunkNum++ {
+			// Determine the position of the chunk.
+			chunkPos := iteration*bufferChunks + chunkNum
+
+			// Read the block data from the device.
+			blockData, err := readBlock(dev, chunkSize, chunkPos)
+			if err != nil {
+				return BackupRecord{}, fmt.Errorf("error reading block data at position %d: %v", chunkPos, err)
+			}
+
+			hashBuffer = append(hashBuffer, blockData...)
+		}
+
+		// Start a transaction to insert the block hashes into the database
+		tx, err := store.Begin()
 		if err != nil {
 			return BackupRecord{}, err
 		}
 
-		hash := calculateBlockHash(blockData)
+		hashMap := make(map[int]string)
 
-		block, err := store.insertBlock(hash)
+		insertBlockQuery, err := tx.Prepare("INSERT INTO blocks (hash) VALUES (?) ON CONFLICT DO NOTHING")
 		if err != nil {
+			tx.Rollback()
+			return BackupRecord{}, err
+		}
+		defer insertBlockQuery.Close()
+
+		var mu sync.Mutex
+
+		var wg sync.WaitGroup
+		// Calculate the hash for each block in the buffer.
+		for i := 0; i < bufferChunks; i++ {
+			wg.Add(1)
+
+			go func(i int) {
+				defer wg.Done()
+
+				startingPos := hashSizeInBlocks * blockSize * i
+				endingPos := startingPos + hashSizeInBlocks*blockSize
+
+				// Read byte range for the block.
+				blockData := hashBuffer[startingPos:endingPos]
+
+				// Calculate the hash for the block.
+				hash := calculateBlockHash(blockData)
+
+				// Determine the position of the chunk.
+				pos := iteration*bufferChunks + i
+
+				mu.Lock()
+				hashMap[pos] = hash
+				mu.Unlock()
+			}(i)
+		}
+
+		wg.Wait()
+
+		// Insert the block hashes into the database.
+		for _, value := range hashMap {
+			_, err = insertBlockQuery.Exec(value)
+			if err != nil {
+				tx.Rollback()
+				return BackupRecord{}, err
+			}
+		}
+
+		if err := tx.Commit(); err != nil {
 			return BackupRecord{}, err
 		}
 
-		if backup.BackupType == backupTypeDifferential {
-			refBlock, err := store.findBlockAtPosition(fullBackup.Id, chunkNum)
-			if err != nil && err != sql.ErrNoRows {
+		if len(hashMap) != 0 {
+			// Start a transaction to insert the block positions into the database
+			tx, err = store.Begin()
+			if err != nil {
 				return BackupRecord{}, err
 			}
 
-			// Skip if the hash was already registered by the last full backup.
-			if refBlock != nil && refBlock.hash == hash {
-				continue
-			}
+			for i := 0; i < bufferChunks; i++ {
+				// Determine the position of the chunk.
+				pos := iteration*bufferChunks + i
 
-			if refBlock == nil {
-				if _, err := store.insertBlockPosition(backup.Id, block.id, chunkNum); err != nil {
+				if backup.BackupType == backupTypeDifferential {
+					refBlock, err := store.findBlockAtPosition(fullBackup.Id, pos)
+					if err != nil && err != sql.ErrNoRows {
+						return BackupRecord{}, err
+					}
+
+					// Skip if the hash was already registered by the last full backup.
+					if refBlock != nil && refBlock.hash == hashMap[pos] {
+						continue
+					}
+				}
+
+				query, err := tx.Prepare("INSERT INTO block_positions (backup_id, block_id, position) VALUES (?, (SELECT id FROM blocks WHERE hash = ?), ?)")
+				if err != nil {
+					tx.Rollback()
 					return BackupRecord{}, err
 				}
-				continue
+				defer query.Close()
+
+				_, err = query.Exec(backup.Id, hashMap[pos], pos)
+				if err != nil {
+					tx.Rollback()
+					return BackupRecord{}, err
+				}
+			}
+
+			// Commit the transaction
+			if err := tx.Commit(); err != nil {
+				return BackupRecord{}, err
 			}
 		}
-
-		_, err = store.insertBlockPosition(backup.Id, block.id, chunkNum)
-		if err != nil {
-			return BackupRecord{}, err
-		}
+		iteration++
 	}
 
 	// Create and open up the backup file for writing.
-	backupPath := fmt.Sprintf("%s/%s", backupDirectory, backup.FileName)
+	backupPath := fmt.Sprintf("%s/%s", outputPath, backup.FileName)
 	backupTarget, err := os.OpenFile(backupPath, os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return backup, fmt.Errorf("error opening restore file: %v", err)
@@ -167,7 +264,8 @@ func calculateBlocks(devicePath string) (chunkSize int, totalChunks int, err err
 
 	totalBlocks := totalSizeInBytes / blockSize
 	chunkSize = hashSizeInBlocks * blockSize
-	totalChunks = int(totalBlocks) / (chunkSize / blockSize)
+	totalChunksFloat := float64(totalBlocks) / (float64(chunkSize) / float64(blockSize))
+	totalChunks = int(math.Ceil(totalChunksFloat))
 
 	return
 }

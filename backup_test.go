@@ -29,6 +29,12 @@ func cleanup(t *testing.T) {
 	if err := os.Remove("backups.db"); err != nil {
 		t.Log(err)
 	}
+	if err := os.Remove("backups.db-shm"); err != nil {
+		t.Log(err)
+	}
+	if err := os.Remove("backups.db-wal"); err != nil {
+		t.Log(err)
+	}
 }
 
 func TestFullBackup(t *testing.T) {
@@ -37,14 +43,14 @@ func TestFullBackup(t *testing.T) {
 	defer store.Close()
 
 	setup(store)
-	// defer cleanup(t)
+	defer cleanup(t)
 
 	vol, err := store.InsertVolume("pg.ext4", "assets/pg.ext4")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	backupRecord, err := Backup(store, &vol)
+	backupRecord, err := Backup(store, &vol, "backups/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,12 +106,12 @@ func TestDifferentialBackup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = Backup(store, &vol)
+	_, err = Backup(store, &vol, "backups/")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	backupRecord, err := Backup(store, &vol)
+	backupRecord, err := Backup(store, &vol, "backups/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,14 +149,14 @@ func TestDifferentialBackupWithChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = Backup(store, &vol)
+	_, err = Backup(store, &vol, "backups/")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	vol.DevicePath = "assets/pg_altered.ext4"
 
-	differential, err := Backup(store, &vol)
+	differential, err := Backup(store, &vol, "backups/")
 	if err != nil {
 		t.Fatal(err)
 	}
