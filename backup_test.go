@@ -29,6 +29,12 @@ func cleanup(t *testing.T) {
 	if err := os.Remove("backups.db"); err != nil {
 		t.Log(err)
 	}
+	if err := os.Remove("backups.db-shm"); err != nil {
+		t.Log(err)
+	}
+	if err := os.Remove("backups.db-wal"); err != nil {
+		t.Log(err)
+	}
 }
 
 func TestFullBackup(t *testing.T) {
@@ -37,7 +43,7 @@ func TestFullBackup(t *testing.T) {
 	defer store.Close()
 
 	setup(store)
-	// defer cleanup(t)
+	defer cleanup(t)
 
 	vol, err := store.InsertVolume("pg.ext4", "assets/pg.ext4")
 	if err != nil {
