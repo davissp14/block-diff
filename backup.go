@@ -149,7 +149,6 @@ func (b *Backup) Run() error {
 
 	// Create and open up the backup file for writing.
 	backupPath := fmt.Sprintf("%s/%s", b.outputPath, b.FileName())
-
 	backupTarget, err := os.OpenFile(backupPath, os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return fmt.Errorf("error opening restore file: %v", err)
@@ -189,6 +188,8 @@ func (b *Backup) Run() error {
 	if err := b.store.updateBackupSize(b.Record.Id, totalBytesWritten); err != nil {
 		return err
 	}
+
+	b.Record.SizeInBytes = totalBytesWritten
 
 	return nil
 }
