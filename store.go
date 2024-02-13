@@ -197,6 +197,29 @@ func (s Store) findLastFullBackupRecord(volumeID int) (BackupRecord, error) {
 	}, nil
 }
 
+func (s Store) findBackup(id int) (BackupRecord, error) {
+	var totalChunks int
+	var fileName string
+	var volumeID int
+	var chunkSize int
+	var backupType string
+	var createdAt time.Time
+	row := s.QueryRow("SELECT file_name, volume_id, backup_type, total_chunks, chunk_size, created_at FROM backups WHERE id = ? ORDER BY id DESC LIMIT 1", id)
+	if err := row.Scan(&fileName, &volumeID, &backupType, &totalChunks, &chunkSize, &createdAt); err != nil {
+		return BackupRecord{}, err
+	}
+
+	return BackupRecord{
+		Id:          id,
+		FileName:    fileName,
+		VolumeID:    volumeID,
+		BackupType:  backupType,
+		TotalChunks: totalChunks,
+		ChunkSize:   chunkSize,
+		createdAt:   createdAt,
+	}, nil
+}
+
 func (s Store) insertBlockPosition(backupID int, blockID int, position int) (BlockPosition, error) {
 	// Upsert the block position into the database
 	insertSQL := `INSERT INTO block_positions (backup_id, block_id, position) VALUES (?,?,?);`

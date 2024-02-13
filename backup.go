@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"math"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,65 +18,68 @@ import (
 const (
 	restoreDirectory = "restores"
 	backupDirectory  = "backups"
-	blockSize        = 4096
-	// hashSizeInBlocks is the number of blocks we evaluate for a given hash.
-	hashSizeInBlocks = 256
-	// hashBufferSize is the number of chunks we buffer before writing to the database.
-	hashBufferBlockSize = 10
 
 	backupTypeDifferential = "differential"
 	backupTypeFull         = "full"
 )
 
 type Backup struct {
+	Config         *BackupConfig
 	Record         *BackupRecord
-	outputPath     string
+	lastFullRecord BackupRecord
 	store          *Store
 	vol            *Volume
-	lastFullRecord BackupRecord
 }
 
-func NewBackup(store *Store, vol *Volume, outputPath string) (*Backup, error) {
-	// Calculate the total number of chunks and the chunk size for the device.
-	chunkSize, totalChunks, err := calculateBlocks(vol.DevicePath)
+func NewBackup(cfg *BackupConfig) (*Backup, error) {
+	// Calculate target size in bytes.
+	sizeInBytes, err := getTargetSizeInBytes(cfg.DevicePath)
 	if err != nil {
 		return nil, err
 	}
 
-	var backupType string
-	lastFullRecord, err := store.findLastFullBackupRecord(vol.Id)
-	switch {
-	case err == sql.ErrNoRows:
-		backupType = backupTypeFull
-	case err != nil:
+	// Calculate the total number of blocks for the device.
+	totalBlocks := calculateTotalBlocks(cfg.BlockSize, sizeInBytes)
+
+	// Find the volume for the device path.
+	vol, err := resolveVolume(cfg.Store, cfg.DevicePath)
+	if err != nil {
 		return nil, err
-	default:
-		backupType = backupTypeDifferential
 	}
 
-	fileName := generateBackupName(vol, backupType)
+	// Find the last full backup record.
+	lastFullRecord, err := cfg.Store.findLastFullBackupRecord(vol.Id)
+	if err != nil && err != sql.ErrNoRows {
+		return nil, err
+	}
+
+	// Determine the backup type.
+	backupType, err := determineBackupType(cfg.Store, vol, lastFullRecord)
+	if err != nil {
+		return nil, err
+	}
+
+	if cfg.OutputFileName == "" {
+		cfg.OutputFileName = generateBackupName(vol, backupType)
+	}
 
 	// TODO - Consider storing a checksum of the target volume, so we can verify at restore time.
-	br, err := store.insertBackupRecord(vol.Id, fileName, backupType, totalChunks, chunkSize)
+	br, err := cfg.Store.insertBackupRecord(vol.Id, cfg.OutputFileName, backupType, totalBlocks, cfg.BlockSize)
 	if err != nil {
 		return nil, err
 	}
 
 	return &Backup{
-		store:          store,
-		vol:            vol,
-		outputPath:     outputPath,
 		Record:         &br,
+		Config:         cfg,
+		vol:            vol,
+		store:          cfg.Store,
 		lastFullRecord: lastFullRecord,
 	}, nil
 }
 
-func (b *Backup) TotalChunks() int {
+func (b *Backup) TotalBlocks() int {
 	return b.Record.TotalChunks
-}
-
-func (b *Backup) ChunkSize() int {
-	return b.Record.ChunkSize
 }
 
 func (b *Backup) BackupType() string {
@@ -82,11 +87,15 @@ func (b *Backup) BackupType() string {
 }
 
 func (b *Backup) FileName() string {
-	return b.Record.FileName
+	return b.Config.OutputFileName
 }
 
-func (b *Backup) OutputPath() string {
-	return b.outputPath
+func (b *Backup) OutputDirectory() string {
+	return b.Config.OutputDirectory
+}
+
+func (b *Backup) FullPath() string {
+	return fmt.Sprintf("%s/%s", b.OutputDirectory(), b.FileName())
 }
 
 func (b *Backup) SizeInBytes() int {
@@ -103,53 +112,62 @@ func (b *Backup) Run() error {
 
 	// Create a buffer to store the block hashes.
 	// The number of hashes we buffer before writing to the database.
-	bufSize := hashBufferBlockSize * hashSizeInBlocks * blockSize
+	bufSize := b.Config.BlockBufferSize * b.Config.BlockSize
 
-	// The number of individual chunks we can store in the buffer.
-	bufferChunks := bufSize / (hashSizeInBlocks * blockSize)
-
-	if b.TotalChunks()%bufferChunks != 0 {
-		return fmt.Errorf("bufferChunks: %d is not a multiple of totalChunks: %d", bufferChunks, b.TotalChunks())
-	}
+	// The number of individual blocks we can store in the buffer.
+	bufBlocks := bufSize / b.Config.BlockSize
 
 	// The current iteration we are on.
 	iteration := 0
 
 	// Read chunks until we have enough to fill the buffer.
-	for iteration*bufferChunks < b.TotalChunks() {
+	for iteration*bufBlocks < b.TotalBlocks() {
 		// Create a buffer to store the block hashes.
-		hashBuffer := make([]byte, 0, bufSize)
+		blockBuf := make([]byte, 0, bufSize)
 
 		// Read chunks until we have enough to fill the buffer.
-		for chunkNum := 0; chunkNum < bufferChunks; chunkNum++ {
+		for blockNum := 0; blockNum < bufBlocks; blockNum++ {
 			// Determine the position of the chunk.
-			chunkPos := iteration*bufferChunks + chunkNum
+			blockPos := iteration*bufBlocks + blockNum
 
 			// Read the block data from the device.
-			blockData, err := readBlock(dev, b.ChunkSize(), chunkPos)
-			if err != nil {
-				return fmt.Errorf("error reading block data at position %d: %v", chunkPos, err)
+			blockData, err := readBlock(dev, b.TotalBlocks(), b.Config.BlockSize, blockPos)
+			switch {
+			case err == io.EOF:
+				continue
+				// return fmt.Errorf("unexpected end of file at position %d", blockPos)
+			case err != nil:
+				return fmt.Errorf("error reading block data at position %d: %v", blockPos, err)
 			}
 
-			hashBuffer = append(hashBuffer, blockData...)
+			blockBuf = append(blockBuf, blockData...)
+
+		}
+
+		// Ensure the buffer size is the expected size.
+		if len(blockBuf) < bufSize {
+			tmpBuf := make([]byte, len(blockBuf))
+			copy(tmpBuf, blockBuf)
+			blockBuf = tmpBuf
 		}
 
 		// Insert the block hashes into the database.
-		hashMap, err := b.insertBlocksTransaction(iteration, bufferChunks, hashBuffer)
+		hashMap, err := b.insertBlocksTransaction(iteration, bufBlocks, blockBuf)
 		if err != nil {
 			return err
 		}
 
+		entries := len(blockBuf) / b.Config.BlockSize
+
 		// Insert the block positions into the database.
-		if err := b.insertBlockPositionsTransaction(iteration, bufferChunks, hashMap); err != nil {
+		if err := b.insertBlockPositionsTransaction(iteration, entries, bufBlocks, hashMap); err != nil {
 			return err
 		}
 		iteration++
 	}
 
 	// Create and open up the backup file for writing.
-	backupPath := fmt.Sprintf("%s/%s", b.outputPath, b.FileName())
-	backupTarget, err := os.OpenFile(backupPath, os.O_CREATE|os.O_WRONLY, 0644)
+	backupTarget, err := os.OpenFile(b.FullPath(), os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return fmt.Errorf("error opening restore file: %v", err)
 	}
@@ -157,7 +175,7 @@ func (b *Backup) Run() error {
 
 	// Query sqlite for only the blocks that need to be backed up.
 	// TODO - Flag zero block hashes, so we can exclude it.
-	rows, err := b.store.Query("SELECT block_id, MIN(position) AS position FROM block_positions where backup_id = ? GROUP BY block_id ORDER BY block_id;", b.Record.Id)
+	rows, err := b.store.Query("SELECT block_id, MIN(position) AS position FROM block_positions where backup_id = ? GROUP BY block_id ORDER BY position;", b.Record.Id)
 	if err != nil {
 		return err
 	}
@@ -171,7 +189,7 @@ func (b *Backup) Run() error {
 			return err
 		}
 
-		blockData, err := readBlock(dev, b.ChunkSize(), position)
+		blockData, err := readBlock(dev, b.TotalBlocks(), b.Config.BlockSize, position)
 		if err != nil {
 			return err
 		}
@@ -194,7 +212,7 @@ func (b *Backup) Run() error {
 	return nil
 }
 
-func (b *Backup) insertBlockPositionsTransaction(iteration int, bufferChunks int, hashMap map[int]string) error {
+func (b *Backup) insertBlockPositionsTransaction(iteration int, entries int, bufBlocks int, hashMap map[int]string) error {
 	if len(hashMap) != 0 {
 		// Start a transaction to insert the block positions into the database
 		tx, err := b.store.Begin()
@@ -202,9 +220,9 @@ func (b *Backup) insertBlockPositionsTransaction(iteration int, bufferChunks int
 			return err
 		}
 
-		for i := 0; i < bufferChunks; i++ {
+		for i := 0; i < entries; i++ {
 			// Determine the position of the chunk.
-			pos := iteration*bufferChunks + i
+			pos := iteration*bufBlocks + i
 
 			if b.BackupType() == backupTypeDifferential {
 				refBlock, err := b.store.findBlockAtPosition(b.lastFullRecord.Id, pos)
@@ -241,7 +259,7 @@ func (b *Backup) insertBlockPositionsTransaction(iteration int, bufferChunks int
 	return nil
 }
 
-func (b *Backup) insertBlocksTransaction(iteration int, bufChunks int, buf []byte) (map[int]string, error) {
+func (b *Backup) insertBlocksTransaction(iteration int, bufBlocks int, buf []byte) (map[int]string, error) {
 	hashMap := make(map[int]string)
 
 	// Start a transaction to insert the block hashes into the database
@@ -261,14 +279,18 @@ func (b *Backup) insertBlocksTransaction(iteration int, bufChunks int, buf []byt
 	var wg sync.WaitGroup
 
 	// Calculate the hash for each block in the buffer.
-	for i := 0; i < bufChunks; i++ {
+	// fmt.Printf("Calculating block hashes for %d blocks\n", bufBlocks)
+	for i := 0; i < len(buf)/b.Config.BlockSize; i++ {
 		wg.Add(1)
 
 		go func(i int) {
 			defer wg.Done()
 
-			startingPos := hashSizeInBlocks * blockSize * i
-			endingPos := startingPos + hashSizeInBlocks*blockSize
+			startingPos := b.Config.BlockSize * i
+			// TODO - This position may need a - 1
+			endingPos := (startingPos + b.Config.BlockSize)
+
+			// fmt.Printf("Reading range: %d -> %d\n", startingPos, endingPos)
 
 			// Read byte range for the block.
 			blockData := buf[startingPos:endingPos]
@@ -277,7 +299,7 @@ func (b *Backup) insertBlocksTransaction(iteration int, bufChunks int, buf []byt
 			hash := calculateBlockHash(blockData)
 
 			// Determine the position of the chunk.
-			pos := iteration*bufChunks + i
+			pos := iteration*bufBlocks + i
 
 			mu.Lock()
 			hashMap[pos] = hash
@@ -304,9 +326,22 @@ func (b *Backup) insertBlocksTransaction(iteration int, bufChunks int, buf []byt
 	return hashMap, nil
 }
 
-func readBlock(disk *os.File, chunkSize, chunkNum int) ([]byte, error) {
-	buffer := make([]byte, chunkSize)
-	_, err := disk.Seek(int64(chunkSize*chunkNum), 0)
+func readBlock(disk *os.File, totalBlocks, blockSize, blockNum int) ([]byte, error) {
+	offset := int64(blockSize * blockNum)
+	buffer := make([]byte, blockSize)
+
+	endRange := blockSize*blockNum + blockSize
+	endOfFile := blockSize * totalBlocks
+	if endRange > endOfFile {
+		endRange = endOfFile
+		trimmedBlockSize := endRange - blockSize*blockNum
+		if trimmedBlockSize <= 0 {
+			return nil, io.EOF
+		}
+		buffer = make([]byte, trimmedBlockSize)
+	}
+
+	_, err := disk.Seek(offset, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -314,7 +349,35 @@ func readBlock(disk *os.File, chunkSize, chunkNum int) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	return buffer, nil
+}
+
+func resolveVolume(store *Store, devicePath string) (*Volume, error) {
+	pathSlice := strings.Split(devicePath, "/")
+	volName := pathSlice[len(pathSlice)-1]
+	vol, err := store.FindVolume(volName)
+	switch {
+	case err == sql.ErrNoRows:
+		// Create a new volume record.
+		vol, err = store.InsertVolume(volName, devicePath)
+		if err != nil {
+			return nil, err
+		}
+	case err != nil:
+		return nil, err
+	}
+
+	return &vol, nil
+}
+
+func determineBackupType(store *Store, vol *Volume, lastFull BackupRecord) (string, error) {
+	// If there is no last full backup, then this is a full backup.
+	if lastFull == (BackupRecord{}) {
+		return backupTypeFull, nil
+	}
+
+	return backupTypeDifferential, nil
 }
 
 func generateBackupName(vol *Volume, backupType string) string {
@@ -328,27 +391,25 @@ func calculateBlockHash(blockData []byte) string {
 }
 
 // calculateBlocks will calculate the total number of blocks and the chunk size for a given file path and store it in the backup record.
-func calculateBlocks(devicePath string) (chunkSize int, totalChunks int, err error) {
+func getTargetSizeInBytes(devicePath string) (int, error) {
 	fileInfo, err := os.Stat(devicePath)
 	if err != nil {
-		return
+		return 0, err
 	}
 	mode := fileInfo.Mode()
 
 	totalSizeInBytes := fileInfo.Size()
-
 	// Check to see if the file is a block device.
 	if mode&os.ModeDevice != 0 && mode&os.ModeCharDevice == 0 {
 		totalSizeInBytes, err = GetBlockDeviceSize(devicePath)
 		if err != nil {
-			return
+			return 0, err
 		}
 	}
+	return int(totalSizeInBytes), nil
+}
 
-	totalBlocks := totalSizeInBytes / blockSize
-	chunkSize = hashSizeInBlocks * blockSize
-	totalChunksFloat := float64(totalBlocks) / (float64(chunkSize) / float64(blockSize))
-	totalChunks = int(math.Ceil(totalChunksFloat))
-
-	return
+func calculateTotalBlocks(blockSize int, sizeInBytes int) int {
+	totalBlocks := float64(sizeInBytes) / float64(blockSize)
+	return int(math.Ceil(totalBlocks))
 }
