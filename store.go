@@ -17,8 +17,8 @@ type BackupRecord struct {
 	VolumeID    int
 	BackupType  string
 	SizeInBytes int
-	TotalChunks int
-	ChunkSize   int
+	totalBlocks int
+	blockSize   int
 	createdAt   time.Time
 }
 
@@ -57,8 +57,8 @@ func (s Store) SetupDB() error {
 		file_name TEXT NOT NULL,
 		backup_type TEXT CHECK(backup_type IN ('full', 'differential')) NOT NULL,
 		size_in_bytes INTEGER DEFAULT 0,
-		total_chunks INTEGER NOT NULL,
-		chunk_size INTEGER NOT NULL,
+		total_blocks INTEGER NOT NULL,
+		block_size INTEGER NOT NULL,
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		FOREIGN KEY(volume_id) REFERENCES volumes(id)
 	);`
@@ -135,10 +135,10 @@ func (s Store) InsertVolume(name, devicePath string) (Volume, error) {
 	return Volume{Id: int(volumeID), Name: name, DevicePath: devicePath}, nil
 }
 
-func (s Store) insertBackupRecord(volumeID int, fileName string, backupType string, totalChunks int, chunkSize int) (BackupRecord, error) {
+func (s Store) insertBackupRecord(volumeID int, fileName string, backupType string, totalBlocks int, blockSize int) (BackupRecord, error) {
 	// Write the backup record to the database
-	insertSQL := `INSERT INTO backups (volume_id, file_name, backup_type, total_chunks, chunk_size) VALUES (?,?,?,?,?);`
-	res, err := s.Exec(insertSQL, volumeID, fileName, backupType, totalChunks, chunkSize)
+	insertSQL := `INSERT INTO backups (volume_id, file_name, backup_type, total_blocks, block_size) VALUES (?,?,?,?,?);`
+	res, err := s.Exec(insertSQL, volumeID, fileName, backupType, totalBlocks, blockSize)
 	if err != nil {
 		return BackupRecord{}, err
 	}
@@ -153,8 +153,8 @@ func (s Store) insertBackupRecord(volumeID int, fileName string, backupType stri
 		FileName:    fileName,
 		VolumeID:    volumeID,
 		BackupType:  backupType,
-		TotalChunks: totalChunks,
-		ChunkSize:   chunkSize,
+		totalBlocks: totalBlocks,
+		blockSize:   blockSize,
 		createdAt:   time.Now(),
 	}, nil
 }
@@ -176,13 +176,13 @@ func (s Store) TotalBlocks() (int, error) {
 
 func (s Store) findLastFullBackupRecord(volumeID int) (BackupRecord, error) {
 	var id int
-	var totalChunks int
-	var chunkSize int
+	var totalBlocks int
+	var blockSize int
 	var fileName string
 	var backupType string
 	var createdAt time.Time
-	row := s.QueryRow("SELECT id, file_name, backup_type, total_chunks, chunk_size, created_at FROM backups WHERE volume_id = ? AND backup_type = 'full' ORDER BY id DESC LIMIT 1", volumeID)
-	if err := row.Scan(&id, &fileName, &backupType, &totalChunks, &chunkSize, &createdAt); err != nil {
+	row := s.QueryRow("SELECT id, file_name, backup_type, total_blocks, block_size, created_at FROM backups WHERE volume_id = ? AND backup_type = 'full' ORDER BY id DESC LIMIT 1", volumeID)
+	if err := row.Scan(&id, &fileName, &backupType, &totalBlocks, &blockSize, &createdAt); err != nil {
 		return BackupRecord{}, err
 	}
 
@@ -191,21 +191,21 @@ func (s Store) findLastFullBackupRecord(volumeID int) (BackupRecord, error) {
 		FileName:    fileName,
 		VolumeID:    volumeID,
 		BackupType:  backupType,
-		TotalChunks: totalChunks,
-		ChunkSize:   chunkSize,
+		totalBlocks: totalBlocks,
+		blockSize:   blockSize,
 		createdAt:   createdAt,
 	}, nil
 }
 
 func (s Store) findBackup(id int) (BackupRecord, error) {
-	var totalChunks int
+	var totalBlocks int
 	var fileName string
 	var volumeID int
-	var chunkSize int
+	var blockSize int
 	var backupType string
 	var createdAt time.Time
-	row := s.QueryRow("SELECT file_name, volume_id, backup_type, total_chunks, chunk_size, created_at FROM backups WHERE id = ? ORDER BY id DESC LIMIT 1", id)
-	if err := row.Scan(&fileName, &volumeID, &backupType, &totalChunks, &chunkSize, &createdAt); err != nil {
+	row := s.QueryRow("SELECT file_name, volume_id, backup_type, total_blocks, block_size, created_at FROM backups WHERE id = ? ORDER BY id DESC LIMIT 1", id)
+	if err := row.Scan(&fileName, &volumeID, &backupType, &totalBlocks, &blockSize, &createdAt); err != nil {
 		return BackupRecord{}, err
 	}
 
@@ -214,8 +214,8 @@ func (s Store) findBackup(id int) (BackupRecord, error) {
 		FileName:    fileName,
 		VolumeID:    volumeID,
 		BackupType:  backupType,
-		TotalChunks: totalChunks,
-		ChunkSize:   chunkSize,
+		totalBlocks: totalBlocks,
+		blockSize:   blockSize,
 		createdAt:   createdAt,
 	}, nil
 }
@@ -335,7 +335,7 @@ func (s Store) findBlockAtPosition(backupID int, pos int) (*Block, error) {
 	return &Block{hash: hash}, nil
 }
 
-// func writeDigest(store *sql.DB, fileName string, totalChunks int, chunkSize int, digest Digest) error {
+// func writeDigest(store *sql.DB, fileName string, totalBlocks int, blockSize int, digest Digest) error {
 // 	// Write the digest to the database
 // 	insertSQL := `INSERT INTO digests (file_name, total_chunks, chunk_size, entries, full_digest, zero_byte_positions) VALUES (?,?,?,?,?,?);`
 // 	entriesJSON, err := json.Marshal(digest.entries)
@@ -348,7 +348,7 @@ func (s Store) findBlockAtPosition(backupID int, pos int) (*Block, error) {
 // 		return err
 // 	}
 
-// 	_, err = store.Exec(insertSQL, fileName, totalChunks, chunkSize, entriesJSON, digest.fullDigest, positions)
+// 	_, err = store.Exec(insertSQL, fileName, totalBlocks, blockSize, entriesJSON, digest.fullDigest, positions)
 // 	if err != nil {
 // 		return err
 // 	}
@@ -361,10 +361,10 @@ func (s Store) findBlockAtPosition(backupID int, pos int) (*Block, error) {
 // 	var fileName string
 // 	var entriesJSON string
 // 	var zeroBytePositions string
-// 	var totalChunks int
-// 	var chunkSize int
+// 	var totalBlocks int
+// 	var blockSize int
 // 	row := store.QueryRow("SELECT id, file_name, total_chunks, chunk_size, entries, zero_byte_positions FROM digests where full_digest = true ORDER BY id DESC LIMIT 1")
-// 	if err := row.Scan(&id, &fileName, &totalChunks, &chunkSize, &entriesJSON, &zeroBytePositions); err != nil {
+// 	if err := row.Scan(&id, &fileName, &totalBlocks, &blockSize, &entriesJSON, &zeroBytePositions); err != nil {
 // 		return Digest{}, err
 // 	}
 
@@ -378,21 +378,21 @@ func (s Store) findBlockAtPosition(backupID int, pos int) (*Block, error) {
 
 // 	digest.id = id
 // 	digest.fileName = fileName
-// 	digest.chunkSize = chunkSize
-// 	digest.totalChunks = totalChunks
+// 	digest.blockSize = blockSize
+// 	digest.totalBlocks = totalBlocks
 
 // 	return digest, nil
 // }
 
 // func findDigestByID(store *sql.DB, id int) (Digest, error) {
 // 	var fileName string
-// 	var totalChunks int
-// 	var chunkSize int
+// 	var totalBlocks int
+// 	var blockSize int
 // 	var fullDigest bool
 // 	var entriesJSON string
 // 	var zeroBytePositions string
 // 	row := store.QueryRow("SELECT file_name, total_chunks, chunk_size, full_digest, entries, zero_byte_positions FROM digests WHERE id = ?", id)
-// 	if err := row.Scan(&fileName, &totalChunks, &chunkSize, &fullDigest, &entriesJSON, &zeroBytePositions); err != nil {
+// 	if err := row.Scan(&fileName, &totalBlocks, &blockSize, &fullDigest, &entriesJSON, &zeroBytePositions); err != nil {
 // 		return Digest{}, err
 // 	}
 
@@ -406,8 +406,8 @@ func (s Store) findBlockAtPosition(backupID int, pos int) (*Block, error) {
 
 // 	digest.id = id
 // 	digest.fullDigest = fullDigest
-// 	digest.chunkSize = chunkSize
-// 	digest.totalChunks = totalChunks
+// 	digest.blockSize = blockSize
+// 	digest.totalBlocks = totalBlocks
 // 	digest.fileName = fileName
 
 // 	return digest, nil

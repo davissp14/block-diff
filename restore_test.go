@@ -143,9 +143,6 @@ func TestFullRestoreFromDifferential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fmt.Println(db.vol.DevicePath)
-
-	fmt.Println(restore.FullRestorePath())
 
 	targetChecksum, err := fileChecksum(restore.FullRestorePath())
 	if err != nil {

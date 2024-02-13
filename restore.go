@@ -91,14 +91,9 @@ func (r *Restore) restoreFromBackup(target *os.File, backup BackupRecord) error 
 
 	for blockNum := 0; blockNum < totalUniqueBlocks; blockNum++ {
 		// Read block data from the source file
-		blockData, err := readBlock(source, totalUniqueBlocks, backup.ChunkSize, blockNum)
+		blockData, err := readBlock(source, totalUniqueBlocks, backup.blockSize, blockNum)
 		if err != nil {
 			return fmt.Errorf("error reading block at position %d: %w", blockNum, err)
-		}
-
-		if len(blockData) != backup.ChunkSize {
-			fmt.Printf("Block %d is not the expected size. Skipping\n", blockNum)
-			continue
 		}
 
 		// Calculate the hash
@@ -120,11 +115,12 @@ func (r *Restore) restoreFromBackup(target *os.File, backup BackupRecord) error 
 				return fmt.Errorf("failed to scan position: %w", err)
 			}
 
-			_, err = target.WriteAt(blockData, int64(pos*backup.ChunkSize))
+			_, err = target.WriteAt(blockData, int64(pos*backup.blockSize))
 			if err != nil {
 				return fmt.Errorf("error writing to restore file: %v", err)
 			}
 		}
+		rows.Close()
 	}
 
 	return nil

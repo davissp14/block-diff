@@ -79,7 +79,7 @@ func NewBackup(cfg *BackupConfig) (*Backup, error) {
 }
 
 func (b *Backup) TotalBlocks() int {
-	return b.Record.TotalChunks
+	return b.Record.totalBlocks
 }
 
 func (b *Backup) BackupType() string {
