@@ -73,17 +73,21 @@ func performBackup(devicePath, outputPath string) error {
 		return fmt.Errorf("error setting up database: %v", err)
 	}
 
-	vol, err := store.InsertVolume(deviceName, devicePath)
-	if err != nil {
-		return fmt.Errorf("error inserting volume: %v", err)
+	cfg := &block.BackupConfig{
+		Store:           store,
+		DevicePath:      devicePath,
+		OutputFormat:    block.BackupOutputFormatFile,
+		OutputFileName:  deviceName + ".backup",
+		OutputDirectory: outputPath,
+		BlockSize:       4096 * 256,
+		BlockBufferSize: 10,
 	}
 
-	fmt.Printf("Performing backup on device: %s\n", devicePath)
-
-	b, err := block.NewBackup(store, &vol, outputPath)
+	b, err := block.NewBackup(cfg)
 	if err != nil {
 		return fmt.Errorf("error creating backup: %v", err)
 	}
+
 	startTime := time.Now()
 	if err := b.Run(); err != nil {
 		return fmt.Errorf("error performing backup: %v", err)
@@ -110,7 +114,7 @@ func performBackup(devicePath, outputPath string) error {
 	fmt.Printf("Backup size %s\n", formatFileSize(float64(b.Record.SizeInBytes)))
 	fmt.Printf("Source device size: %s\n", formatFileSize(float64(deviceSize)))
 	fmt.Printf("Space saved: %s\n", formatFileSize(float64(sizeDiff)))
-	fmt.Printf("Blocks evaluated: %d\n", b.TotalChunks())
+	fmt.Printf("Blocks evaluated: %d\n", b.TotalBlocks())
 	fmt.Printf("Blocks written: %d\n", uniqueBlocks)
 	fmt.Println("==================================")
 

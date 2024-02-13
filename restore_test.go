@@ -18,36 +18,49 @@ func TestFullRestore(t *testing.T) {
 	setup(store)
 	defer cleanup(t)
 
-	vol, err := store.InsertVolume("pg.ext4", "assets/pg.ext4")
+	cfg := &BackupConfig{
+		Store:           store,
+		DevicePath:      "assets/pg.ext4",
+		OutputFormat:    BackupOutputFormatFile,
+		OutputDirectory: "backups/",
+		BlockSize:       1048576,
+		BlockBufferSize: 1,
+	}
+
+	b, err := NewBackup(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Perform full backup
-
-	b, err := NewBackup(store, &vol, "backups/")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Perform full backup
 	if err := b.Run(); err != nil {
 		t.Fatal(err)
 	}
 
-	// Perform full restore
-	if err := Restore(store, *b.Record); err != nil {
-		t.Fatal(err)
+	restoreConfig := RestoreConfig{
+		Store:              store,
+		RestoreInputFormat: RestoreInputFormatFile,
+		SourceBackupID:     b.Record.Id,
+		OutputDirectory:    "restores/",
+		OutputFileName:     b.Record.FileName,
 	}
 
-	// Compare the original file with the restored file
-	sourceChecksum, err := fileChecksum(vol.DevicePath)
+	restore, err := NewRestore(restoreConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	restoreFilePath := fmt.Sprintf("%s/%s", restoreDirectory, b.Record.FileName+".restore")
-	targetChecksum, err := fileChecksum(restoreFilePath)
+	// Perform full restore
+	if err := restore.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Compare the original file with the restored file
+	sourceChecksum, err := fileChecksum(b.vol.DevicePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	targetChecksum, err := fileChecksum(restore.FullRestorePath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,12 +80,16 @@ func TestFullRestoreFromDifferential(t *testing.T) {
 	setup(store)
 	defer cleanup(t)
 
-	vol, err := store.InsertVolume("pg.ext4", "assets/pg.ext4")
-	if err != nil {
-		t.Fatal(err)
+	cfg := &BackupConfig{
+		Store:           store,
+		DevicePath:      "assets/pg.ext4",
+		OutputFormat:    BackupOutputFormatFile,
+		OutputDirectory: "backups",
+		BlockSize:       1048576,
+		BlockBufferSize: 7,
 	}
 
-	b, err := NewBackup(store, &vol, "backups/")
+	b, err := NewBackup(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,13 +98,13 @@ func TestFullRestoreFromDifferential(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Perform a differential backup
-	vol.DevicePath = "assets/pg_altered.ext4"
-
-	db, err := NewBackup(store, &vol, "backups/")
+	db, err := NewBackup(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	// Hack the device path to simulate a change
+	db.vol.DevicePath = "assets/pg_altered.ext4"
 
 	if err := db.Run(); err != nil {
 		t.Fatal(err)
@@ -103,19 +120,31 @@ func TestFullRestoreFromDifferential(t *testing.T) {
 		t.Fatalf("expected 1 block position, got %d", len(positions))
 	}
 
-	// Perform a full restore
-	if err := Restore(store, *db.Record); err != nil {
-		t.Fatal(err)
+	restoreConfig := RestoreConfig{
+		Store:              store,
+		RestoreInputFormat: RestoreInputFormatFile,
+		SourceBackupID:     db.Record.Id,
+		OutputDirectory:    "restores",
+		OutputFileName:     db.Record.FileName,
 	}
 
-	// Compare the original file with the restored file
-	sourceChecksum, err := fileChecksum(vol.DevicePath)
+	restore, err := NewRestore(restoreConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	restoreFilePath := fmt.Sprintf("%s/%s", restoreDirectory, db.Record.FileName+".restore")
-	targetChecksum, err := fileChecksum(restoreFilePath)
+	// Perform full restore
+	if err := restore.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Compare the original file with the restored file
+	sourceChecksum, err := fileChecksum(db.vol.DevicePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	targetChecksum, err := fileChecksum(restore.FullRestorePath())
 	if err != nil {
 		t.Fatal(err)
 	}
