@@ -38,6 +38,10 @@ func NewBackup(cfg *BackupConfig) (*Backup, error) {
 		return nil, err
 	}
 
+	if cfg.BlockSize > sizeInBytes {
+		fmt.Fprintf(os.Stderr, "WARNING: block size %d exceeds the size of the backup target %d. This will result in wasted space!", cfg.BlockSize, sizeInBytes)
+	}
+
 	// Calculate the total number of blocks for the device.
 	totalBlocks := calculateTotalBlocks(cfg.BlockSize, sizeInBytes)
 
@@ -59,6 +63,11 @@ func NewBackup(cfg *BackupConfig) (*Backup, error) {
 		return nil, err
 	}
 
+	// Trim the last slash from the output directory.
+	if cfg.OutputDirectory != "" {
+		cfg.OutputDirectory = strings.TrimRight(cfg.OutputDirectory, "/")
+	}
+
 	if cfg.OutputFileName == "" {
 		cfg.OutputFileName = generateBackupName(vol, backupType)
 	}
@@ -66,7 +75,7 @@ func NewBackup(cfg *BackupConfig) (*Backup, error) {
 	fullPath := fmt.Sprintf("%s/%s", cfg.OutputDirectory, cfg.OutputFileName)
 
 	// TODO - Consider storing a checksum of the target volume, so we can verify at restore time.
-	br, err := cfg.Store.insertBackupRecord(vol.Id, cfg.OutputFileName, fullPath, backupType, totalBlocks, cfg.BlockSize)
+	br, err := cfg.Store.insertBackupRecord(vol.Id, cfg.OutputFileName, fullPath, string(cfg.OutputFormat), backupType, totalBlocks, cfg.BlockSize, sizeInBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -81,7 +90,7 @@ func NewBackup(cfg *BackupConfig) (*Backup, error) {
 }
 
 func (b *Backup) TotalBlocks() int {
-	return b.Record.totalBlocks
+	return b.Record.TotalBlocks
 }
 
 func (b *Backup) BackupType() string {

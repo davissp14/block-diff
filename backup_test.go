@@ -144,12 +144,12 @@ func TestDifferentialBackup(t *testing.T) {
 		t.Errorf("expected backup type to be differential, got %s", db.Record.BackupType)
 	}
 
-	if db.Record.totalBlocks != 50 {
-		t.Errorf("expected total blocks to be 50, got %d", db.Record.totalBlocks)
+	if db.Record.TotalBlocks != 50 {
+		t.Errorf("expected total blocks to be 50, got %d", db.Record.TotalBlocks)
 	}
 
-	if db.Record.blockSize != 1048576 {
-		t.Fatalf("expected block size to be 1048576, got %d", db.Record.blockSize)
+	if db.Record.BlockSize != 1048576 {
+		t.Fatalf("expected block size to be 1048576, got %d", db.Record.BlockSize)
 	}
 }
 
@@ -162,7 +162,7 @@ func TestDifferentialBackupWithChanges(t *testing.T) {
 	defer store.Close()
 
 	setup(store)
-	defer cleanup(t)
+	// defer cleanup(t)
 
 	cfg := &BackupConfig{
 		Store:           store,
