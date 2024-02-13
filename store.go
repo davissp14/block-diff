@@ -14,6 +14,7 @@ type Volume struct {
 type BackupRecord struct {
 	Id          int
 	FileName    string
+	FullPath    string
 	VolumeID    int
 	BackupType  string
 	SizeInBytes int
@@ -55,6 +56,7 @@ func (s Store) SetupDB() error {
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		volume_id INTEGER NOT NULL,
 		file_name TEXT NOT NULL,
+		full_path TEXT NOT NULL,
 		backup_type TEXT CHECK(backup_type IN ('full', 'differential')) NOT NULL,
 		size_in_bytes INTEGER DEFAULT 0,
 		total_blocks INTEGER NOT NULL,
@@ -135,10 +137,10 @@ func (s Store) InsertVolume(name, devicePath string) (Volume, error) {
 	return Volume{Id: int(volumeID), Name: name, DevicePath: devicePath}, nil
 }
 
-func (s Store) insertBackupRecord(volumeID int, fileName string, backupType string, totalBlocks int, blockSize int) (BackupRecord, error) {
+func (s Store) insertBackupRecord(volumeID int, fileName string, fullPath string, backupType string, totalBlocks int, blockSize int) (BackupRecord, error) {
 	// Write the backup record to the database
-	insertSQL := `INSERT INTO backups (volume_id, file_name, backup_type, total_blocks, block_size) VALUES (?,?,?,?,?);`
-	res, err := s.Exec(insertSQL, volumeID, fileName, backupType, totalBlocks, blockSize)
+	insertSQL := `INSERT INTO backups (volume_id, file_name, full_path, backup_type, total_blocks, block_size) VALUES (?,?,?,?,?,?);`
+	res, err := s.Exec(insertSQL, volumeID, fileName, fullPath, backupType, totalBlocks, blockSize)
 	if err != nil {
 		return BackupRecord{}, err
 	}
@@ -151,6 +153,7 @@ func (s Store) insertBackupRecord(volumeID int, fileName string, backupType stri
 	return BackupRecord{
 		Id:          int(backupID),
 		FileName:    fileName,
+		FullPath:    fullPath,
 		VolumeID:    volumeID,
 		BackupType:  backupType,
 		totalBlocks: totalBlocks,
@@ -179,16 +182,18 @@ func (s Store) findLastFullBackupRecord(volumeID int) (BackupRecord, error) {
 	var totalBlocks int
 	var blockSize int
 	var fileName string
+	var fullPath string
 	var backupType string
 	var createdAt time.Time
-	row := s.QueryRow("SELECT id, file_name, backup_type, total_blocks, block_size, created_at FROM backups WHERE volume_id = ? AND backup_type = 'full' ORDER BY id DESC LIMIT 1", volumeID)
-	if err := row.Scan(&id, &fileName, &backupType, &totalBlocks, &blockSize, &createdAt); err != nil {
+	row := s.QueryRow("SELECT id, file_name, full_path, backup_type, total_blocks, block_size, created_at FROM backups WHERE volume_id = ? AND backup_type = 'full' ORDER BY id DESC LIMIT 1", volumeID)
+	if err := row.Scan(&id, &fileName, &fullPath, &backupType, &totalBlocks, &blockSize, &createdAt); err != nil {
 		return BackupRecord{}, err
 	}
 
 	return BackupRecord{
 		Id:          id,
 		FileName:    fileName,
+		FullPath:    fullPath,
 		VolumeID:    volumeID,
 		BackupType:  backupType,
 		totalBlocks: totalBlocks,
@@ -200,18 +205,20 @@ func (s Store) findLastFullBackupRecord(volumeID int) (BackupRecord, error) {
 func (s Store) findBackup(id int) (BackupRecord, error) {
 	var totalBlocks int
 	var fileName string
+	var fullPath string
 	var volumeID int
 	var blockSize int
 	var backupType string
 	var createdAt time.Time
-	row := s.QueryRow("SELECT file_name, volume_id, backup_type, total_blocks, block_size, created_at FROM backups WHERE id = ? ORDER BY id DESC LIMIT 1", id)
-	if err := row.Scan(&fileName, &volumeID, &backupType, &totalBlocks, &blockSize, &createdAt); err != nil {
+	row := s.QueryRow("SELECT file_name, full_path, volume_id, backup_type, total_blocks, block_size, created_at FROM backups WHERE id = ? ORDER BY id DESC LIMIT 1", id)
+	if err := row.Scan(&fileName, &fullPath, &volumeID, &backupType, &totalBlocks, &blockSize, &createdAt); err != nil {
 		return BackupRecord{}, err
 	}
 
 	return BackupRecord{
 		Id:          id,
 		FileName:    fileName,
+		FullPath:    fullPath,
 		VolumeID:    volumeID,
 		BackupType:  backupType,
 		totalBlocks: totalBlocks,

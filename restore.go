@@ -50,6 +50,8 @@ func (r *Restore) FullRestorePath() string {
 }
 
 func (r *Restore) Run() error {
+	fmt.Printf("Restoring backup %s to %s\n", r.backup.FileName, r.FullRestorePath())
+
 	restoreTarget, err := os.OpenFile(r.FullRestorePath(), os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return fmt.Errorf("error opening restore file: %v", err)

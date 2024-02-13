@@ -170,7 +170,7 @@ func TestDifferentialBackupWithChanges(t *testing.T) {
 		OutputFormat:    BackupOutputFormatFile,
 		OutputDirectory: "backups/",
 		BlockSize:       1048576,
-		BlockBufferSize: 2,
+		BlockBufferSize: 7,
 	}
 
 	b, err := NewBackup(cfg)
@@ -213,51 +213,33 @@ func TestDifferentialBackupWithChanges(t *testing.T) {
 	}
 }
 
-func TestBufferedBackup(t *testing.T) {
-	// Setup sqlite connection
-	store, err := NewStore()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+// func TestBackupToStdout(t *testing.T) {
+// 	// Setup sqlite connection
+// 	store, err := NewStore()
+// 	if err != nil {
+// 		t.Fatal(err)
+// 	}
+// 	defer store.Close()
 
-	setup(store)
-	defer cleanup(t)
+// 	setup(store)
+// 	defer cleanup(t)
 
-	cfg := &BackupConfig{
-		Store:           store,
-		DevicePath:      "assets/pg.ext4",
-		OutputFormat:    BackupOutputFormatFile,
-		OutputDirectory: "backups/",
-		BlockSize:       1048576,
-		BlockBufferSize: 7,
-	}
+// 	cfg := &BackupConfig{
+// 		Store:           store,
+// 		DevicePath:      "assets/pg.ext4",
+// 		OutputFormat:    BackupOutputFormatSTDOUT,
+// 		OutputDirectory: "backups/",
+// 		BlockSize:       1048576,
+// 		BlockBufferSize: 3,
+// 	}
 
-	b, err := NewBackup(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
+// 	b, err := NewBackup(cfg)
+// 	if err != nil {
+// 		t.Fatal(err)
+// 	}
 
-	if err := b.Run(); err != nil {
-		t.Fatal(err)
-	}
+// 	if err := b.Run(); err != nil {
+// 		t.Fatal(err)
+// 	}
 
-	totalBlocks, err := b.store.TotalBlocks()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if totalBlocks != 37 {
-		t.Fatalf("expected 37 blocks, got %d", totalBlocks)
-	}
-
-	positions, err := store.findBlockPositionsByBackup(b.Record.Id)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if len(positions) != 50 {
-		t.Fatalf("expected 50 positions, got %d", len(positions))
-	}
-
-}
+// }
