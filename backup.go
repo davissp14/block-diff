@@ -33,7 +33,7 @@ type Backup struct {
 
 func NewBackup(cfg *BackupConfig) (*Backup, error) {
 	// Calculate target size in bytes.
-	sizeInBytes, err := getTargetSizeInBytes(cfg.DevicePath)
+	sizeInBytes, err := GetTargetSizeInBytes(cfg.DevicePath)
 	if err != nil {
 		return nil, err
 	}
@@ -388,25 +388,6 @@ func generateBackupName(vol *Volume, backupType string) string {
 func calculateBlockHash(blockData []byte) string {
 	hash := sha256.Sum256(blockData)
 	return hex.EncodeToString(hash[:])
-}
-
-// calculateBlocks will calculate the total number of blocks and the chunk size for a given file path and store it in the backup record.
-func getTargetSizeInBytes(devicePath string) (int, error) {
-	fileInfo, err := os.Stat(devicePath)
-	if err != nil {
-		return 0, err
-	}
-	mode := fileInfo.Mode()
-
-	totalSizeInBytes := fileInfo.Size()
-	// Check to see if the file is a block device.
-	if mode&os.ModeDevice != 0 && mode&os.ModeCharDevice == 0 {
-		totalSizeInBytes, err = GetBlockDeviceSize(devicePath)
-		if err != nil {
-			return 0, err
-		}
-	}
-	return int(totalSizeInBytes), nil
 }
 
 func calculateTotalBlocks(blockSize int, sizeInBytes int) int {
