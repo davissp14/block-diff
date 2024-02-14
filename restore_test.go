@@ -39,7 +39,7 @@ func TestFullRestore(t *testing.T) {
 	restoreConfig := RestoreConfig{
 		Store:              store,
 		RestoreInputFormat: RestoreInputFormatFile,
-		SourceBackupID:     b.Record.Id,
+		SourceBackupID:     b.Record.ID,
 		OutputDirectory:    "restores/",
 		OutputFileName:     b.Record.FileName,
 	}
@@ -55,7 +55,7 @@ func TestFullRestore(t *testing.T) {
 	}
 
 	// Confirm that the differential backup resulted in a block change.
-	positions, err := store.findBlockPositionsByBackup(b.Record.Id)
+	positions, err := store.findBlockPositionsByBackup(b.Record.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestFullRestoreFromDifferential(t *testing.T) {
 	}
 
 	// Confirm that the differential backup resulted in a block change.
-	positions, err := store.findBlockPositionsByBackup(db.Record.Id)
+	positions, err := store.findBlockPositionsByBackup(db.Record.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestFullRestoreFromDifferential(t *testing.T) {
 	restoreConfig := RestoreConfig{
 		Store:              store,
 		RestoreInputFormat: RestoreInputFormatFile,
-		SourceBackupID:     db.Record.Id,
+		SourceBackupID:     db.Record.ID,
 		OutputDirectory:    "restores",
 		OutputFileName:     db.Record.FileName,
 	}

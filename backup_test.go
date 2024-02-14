@@ -40,6 +40,9 @@ func cleanup(t *testing.T) {
 func TestFullBackup(t *testing.T) {
 	// Setup sqlite connection
 	store, err := NewStore()
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer store.Close()
 
 	setup(store)
@@ -79,7 +82,7 @@ func TestFullBackup(t *testing.T) {
 		t.Fatalf("expected chunk size to be 1048576, got %d", b.Config.BlockSize)
 	}
 
-	positions, err := store.findBlockPositionsByBackup(b.Record.Id)
+	positions, err := store.findBlockPositionsByBackup(b.Record.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +206,7 @@ func TestDifferentialBackupWithChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	positions, err := store.findBlockPositionsByBackup(db.Record.Id)
+	positions, err := store.findBlockPositionsByBackup(db.Record.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

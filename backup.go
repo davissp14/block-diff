@@ -16,9 +16,6 @@ import (
 )
 
 const (
-	restoreDirectory = "restores"
-	backupDirectory  = "backups"
-
 	backupTypeDifferential = "differential"
 	backupTypeFull         = "full"
 )
@@ -52,7 +49,7 @@ func NewBackup(cfg *BackupConfig) (*Backup, error) {
 	}
 
 	// Find the last full backup record.
-	lastFullRecord, err := cfg.Store.findLastFullBackupRecord(vol.Id)
+	lastFullRecord, err := cfg.Store.findLastFullBackupRecord(vol.ID)
 	if err != nil && err != sql.ErrNoRows {
 		return nil, err
 	}
@@ -75,7 +72,7 @@ func NewBackup(cfg *BackupConfig) (*Backup, error) {
 	fullPath := fmt.Sprintf("%s/%s", cfg.OutputDirectory, cfg.OutputFileName)
 
 	// TODO - Consider storing a checksum of the target volume, so we can verify at restore time.
-	br, err := cfg.Store.insertBackupRecord(vol.Id, cfg.OutputFileName, fullPath, string(cfg.OutputFormat), backupType, totalBlocks, cfg.BlockSize, sizeInBytes)
+	br, err := cfg.Store.insertBackupRecord(vol.ID, cfg.OutputFileName, fullPath, string(cfg.OutputFormat), backupType, totalBlocks, cfg.BlockSize, sizeInBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -201,7 +198,7 @@ func (b *Backup) createBackup(sourceFile *os.File) (int, error) {
 
 	// Query sqlite for only the blocks that need to be backed up.
 	// TODO - Flag zero block hashes, so we can exclude it.
-	rows, err := b.store.Query("SELECT block_id, MIN(position) AS position FROM block_positions where backup_id = ? GROUP BY block_id ORDER BY position;", b.Record.Id)
+	rows, err := b.store.Query("SELECT block_id, MIN(position) AS position FROM block_positions where backup_id = ? GROUP BY block_id ORDER BY position;", b.Record.ID)
 	if err != nil {
 		return 0, err
 	}
@@ -231,7 +228,7 @@ func (b *Backup) createBackup(sourceFile *os.File) (int, error) {
 		totalBytesWritten += len(blockData)
 	}
 
-	if err := b.store.updateBackupSize(b.Record.Id, totalBytesWritten); err != nil {
+	if err := b.store.updateBackupSize(b.Record.ID, totalBytesWritten); err != nil {
 		return 0, err
 	}
 
@@ -255,7 +252,7 @@ func (b *Backup) insertBlockPositionsTransaction(iteration int, bufEntries int, 
 			pos := iteration*bufBlocks + i
 
 			if b.BackupType() == backupTypeDifferential {
-				refBlock, err := b.store.findBlockAtPosition(b.lastFullRecord.Id, pos)
+				refBlock, err := b.store.findBlockAtPosition(b.lastFullRecord.ID, pos)
 				if err != nil && err != sql.ErrNoRows {
 					return err
 				}
@@ -273,7 +270,7 @@ func (b *Backup) insertBlockPositionsTransaction(iteration int, bufEntries int, 
 			}
 			defer query.Close()
 
-			_, err = query.Exec(b.Record.Id, hashMap[pos], pos)
+			_, err = query.Exec(b.Record.ID, hashMap[pos], pos)
 			if err != nil {
 				tx.Rollback()
 				return err

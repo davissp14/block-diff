@@ -82,7 +82,7 @@ func (r *Restore) restoreFromBackup(target *os.File, backup BackupRecord) error 
 
 	// Count the total number of unique blocks in the backup
 	var totalUniqueBlocks int
-	row := r.store.QueryRow("SELECT COUNT(DISTINCT block_id) FROM block_positions WHERE backup_id = ?", backup.Id)
+	row := r.store.QueryRow("SELECT COUNT(DISTINCT block_id) FROM block_positions WHERE backup_id = ?", backup.ID)
 	if err := row.Scan(&totalUniqueBlocks); err != nil {
 		return fmt.Errorf("error counting unique blocks: %w", err)
 	}
@@ -98,7 +98,7 @@ func (r *Restore) restoreFromBackup(target *os.File, backup BackupRecord) error 
 		hash := calculateBlockHash(blockData)
 
 		// Query the database for the block positions tied to the hash
-		rows, err := r.store.Query("SELECT position from block_positions bp JOIN blocks b ON bp.block_id = b.id where bp.backup_id = ? AND b.hash = ?", backup.Id, hash)
+		rows, err := r.store.Query("SELECT position from block_positions bp JOIN blocks b ON bp.block_id = b.id where bp.backup_id = ? AND b.hash = ?", backup.ID, hash)
 		if err != nil {
 			return fmt.Errorf("error quering block positions for hash %s: %w", hash, err)
 		}

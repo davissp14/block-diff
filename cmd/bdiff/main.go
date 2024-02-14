@@ -202,7 +202,7 @@ func performBackup(devicePath, outputDir, outputFormat string, blockSize int, bu
 	}
 
 	if cfg.OutputFormat == block.BackupOutputFormatFile {
-		uniqueBlocks, err := store.UniqueBlocksInBackup(b.Record.Id)
+		uniqueBlocks, err := store.UniqueBlocksInBackup(b.Record.ID)
 		if err != nil {
 			return fmt.Errorf("error getting unique blocks: %v", err)
 		}
@@ -286,7 +286,7 @@ func listBackups() error {
 
 	for _, b := range backups {
 		table.Append([]string{
-			strconv.Itoa(b.Id),
+			strconv.Itoa(b.ID),
 			strings.ToUpper(b.BackupType),
 			fmt.Sprint(b.BlockSize),
 			fmt.Sprint(b.TotalBlocks),
