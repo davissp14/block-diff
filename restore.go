@@ -54,7 +54,7 @@ func (r *Restore) Run() error {
 	if err != nil {
 		return fmt.Errorf("error opening restore file: %v", err)
 	}
-	defer restoreTarget.Close()
+	defer func() { _ = restoreTarget.Close() }()
 
 	switch r.backup.BackupType {
 	case backupTypeFull:
@@ -78,7 +78,7 @@ func (r *Restore) restoreFromBackup(target *os.File, backup BackupRecord) error 
 	if err != nil {
 		return fmt.Errorf("error opening restore source file: %v", err)
 	}
-	defer source.Close()
+	defer func() { _ = source.Close() }()
 
 	// Count the total number of unique blocks in the backup
 	var totalUniqueBlocks int

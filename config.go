@@ -39,10 +39,6 @@ const (
 	RestoreInputFormatFile RestoreInputFormat = "file"
 )
 
-const (
-	backupTypeFile = "file"
-)
-
 // RestoreConfig is the configuration for a restore operation.
 type RestoreConfig struct {
 	// Store is the sqlite data store used to persist the backup metadata.
