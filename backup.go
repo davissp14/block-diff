@@ -203,28 +203,53 @@ func (b *Backup) insertBlockPositionsTransaction(iteration int, bufEntries int, 
 			return err
 		}
 
+		var dRefMap map[int]string
+
+		// Query hashes associated with the position range.
+		if b.BackupType() == backupTypeDifferential {
+			dRefMap = make(map[int]string)
+			posStartRange := iteration * bufBlocks
+			posEndRange := posStartRange + bufBlocks
+
+			rows, err := b.store.Query("SELECT bp.position, hash FROM blocks b JOIN block_positions bp ON bp.block_id = b.id WHERE bp.backup_id = ? AND bp.position >= ? AND bp.position < ?", b.lastFullRecord.ID, posStartRange, posEndRange)
+			if err != nil {
+				return err
+			}
+
+			for rows.Next() {
+				var hash string
+				var position int
+				if err := rows.Scan(&position, &hash); err != nil {
+					switch {
+					case err == sql.ErrNoRows:
+						break
+					default:
+						return err
+					}
+				}
+				dRefMap[position] = hash
+			}
+		}
+
+		// TODO - Eliminate the select portion of the insert statement.
+		// TODO - Consider using a bulk insert.
+		query, err := tx.Prepare("INSERT INTO block_positions (backup_id, block_id, position) VALUES (?, (SELECT id FROM blocks WHERE hash = ?), ?)")
+		if err != nil {
+			tx.Rollback()
+			return err
+		}
+		defer query.Close()
+
 		for i := 0; i < bufEntries; i++ {
 			// Determine the position of the chunk.
 			pos := iteration*bufBlocks + i
 
 			if b.BackupType() == backupTypeDifferential {
-				refBlock, err := b.store.findBlockAtPosition(b.lastFullRecord.ID, pos)
-				if err != nil && err != sql.ErrNoRows {
-					return err
-				}
-
 				// Skip if the hash was already registered by the last full backup.
-				if refBlock != nil && refBlock.hash == hashMap[pos] {
+				if _, ok := dRefMap[pos]; ok && dRefMap[pos] == hashMap[pos] {
 					continue
 				}
 			}
-
-			query, err := tx.Prepare("INSERT INTO block_positions (backup_id, block_id, position) VALUES (?, (SELECT id FROM blocks WHERE hash = ?), ?)")
-			if err != nil {
-				tx.Rollback()
-				return err
-			}
-			defer query.Close()
 
 			_, err = query.Exec(b.Record.ID, hashMap[pos], pos)
 			if err != nil {
