@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mattn/go-sqlite3"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -170,13 +171,13 @@ func (b *Backup) Run() error {
 			blockBuf = tmpBuf
 		}
 
+		bufEntries := len(blockBuf) / b.Config.BlockSize
+
 		// Insert the block hashes into the database.
-		hashMap, err := b.insertBlocksTransaction(sourceFile, iteration, bufBlocks, blockBuf)
+		hashMap, err := b.insertBlocksTransaction(targetFile, iteration, bufEntries, bufBlocks, blockBuf)
 		if err != nil {
 			return err
 		}
-
-		bufEntries := len(blockBuf) / b.Config.BlockSize
 
 		// Insert the block positions into the database.
 		if err := b.insertBlockPositionsTransaction(iteration, bufEntries, bufBlocks, hashMap); err != nil {
@@ -299,7 +300,7 @@ func (b *Backup) insertBlockPositionsTransaction(iteration int, bufEntries int, 
 	return nil
 }
 
-func (b *Backup) insertBlocksTransaction(target *os.File, iteration int, bufBlocks int, buf []byte) (map[int]string, error) {
+func (b *Backup) insertBlocksTransaction(target *os.File, iteration int, bufEntries int, bufBlocks int, buf []byte) (map[int]string, error) {
 	hashMap := make(map[int]string)
 
 	// Start a transaction to insert the block hashes into the database
@@ -308,7 +309,7 @@ func (b *Backup) insertBlocksTransaction(target *os.File, iteration int, bufBloc
 		return nil, err
 	}
 
-	insertBlockQuery, err := tx.Prepare("INSERT INTO blocks (hash) VALUES (?) ON CONFLICT DO NOTHING")
+	insertBlockQuery, err := tx.Prepare("INSERT INTO blocks (hash) VALUES (?)")
 	if err != nil {
 		tx.Rollback()
 		return nil, err
@@ -316,46 +317,66 @@ func (b *Backup) insertBlocksTransaction(target *os.File, iteration int, bufBloc
 	defer insertBlockQuery.Close()
 
 	var mu sync.Mutex
-	var wg sync.WaitGroup
+	// var wg sync.WaitGroup
 
 	// Calculate the hash for each block in the buffer.
-	for i := 0; i < len(buf)/b.Config.BlockSize; i++ {
-		wg.Add(1)
+	for i := 0; i < bufEntries; i++ {
+		// wg.Add(1)
 
-		go func(i int) {
-			defer wg.Done()
+		// fmt.Printf("Inserting block %d into the database\n", i)
+		// go func(i int) {
+		// 	defer wg.Done()
 
-			startingPos := b.Config.BlockSize * i
-			endingPos := (startingPos + b.Config.BlockSize)
+		startingPos := b.Config.BlockSize * i
+		endingPos := (startingPos + b.Config.BlockSize)
 
-			// Read byte range for the block.
-			blockData := buf[startingPos:endingPos]
+		// Read byte range for the block.
+		blockData := buf[startingPos:endingPos]
 
-			// Calculate the hash for the block.
-			hash := calculateBlockHash(blockData)
+		// Calculate the hash for the block.
+		hash := calculateBlockHash(blockData)
 
-			// Determine the position of the chunk.
-			pos := iteration*bufBlocks + i
+		// Determine the position of the chunk.
+		pos := iteration*bufBlocks + i
 
-			mu.Lock()
-			hashMap[pos] = hash
-			mu.Unlock()
+		hashMap[pos] = hash
 
-			// Write block data to target file.
+		_, err = insertBlockQuery.Exec(hash)
+		if err != nil {
+			if sqliteErr, ok := err.(sqlite3.Error); ok {
+				// If there's a constraint error, we know the hash is already in the database.
+				// When this is the case we can skip writing the data to the backup.
+				if sqliteErr.Code == sqlite3.ErrConstraint {
+					// fmt.Printf("Hash %s already exists in the database\n", hash)
+					continue
+				}
+			}
+		}
 
-		}(i)
-	}
+		// Write the block data to the backup file.
 
-	wg.Wait()
-
-	// Insert the block hashes into the database.
-	for _, value := range hashMap {
-		_, err = insertBlockQuery.Exec(value)
+		// Write blockdata to the backup file
+		mu.Lock()
+		_, err = target.Write(blockData)
 		if err != nil {
 			tx.Rollback()
-			return nil, err
+			return nil, fmt.Errorf("error writing to backup file: %v", err)
 		}
+		mu.Unlock()
+
+		// fmt.Printf("Block %d written to the backup file", i)
+		// }(i)
 	}
+
+	// wg.Wait()
+
+	// Insert the block hashes into the database.
+
+	// }
+
+	// for _, value := range hashMap {
+
+	// }
 
 	if err := tx.Commit(); err != nil {
 		tx.Rollback()
