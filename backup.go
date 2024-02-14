@@ -38,6 +38,10 @@ func NewBackup(cfg *BackupConfig) (*Backup, error) {
 		return nil, err
 	}
 
+	if cfg.BlockSize > sizeInBytes {
+		fmt.Fprintf(os.Stderr, "WARNING: block size %d exceeds the size of the backup target %d. This will result in wasted space!", cfg.BlockSize, sizeInBytes)
+	}
+
 	// Calculate the total number of blocks for the device.
 	totalBlocks := calculateTotalBlocks(cfg.BlockSize, sizeInBytes)
 
@@ -59,12 +63,19 @@ func NewBackup(cfg *BackupConfig) (*Backup, error) {
 		return nil, err
 	}
 
+	// Trim the last slash from the output directory.
+	if cfg.OutputDirectory != "" {
+		cfg.OutputDirectory = strings.TrimRight(cfg.OutputDirectory, "/")
+	}
+
 	if cfg.OutputFileName == "" {
 		cfg.OutputFileName = generateBackupName(vol, backupType)
 	}
 
+	fullPath := fmt.Sprintf("%s/%s", cfg.OutputDirectory, cfg.OutputFileName)
+
 	// TODO - Consider storing a checksum of the target volume, so we can verify at restore time.
-	br, err := cfg.Store.insertBackupRecord(vol.Id, cfg.OutputFileName, backupType, totalBlocks, cfg.BlockSize)
+	br, err := cfg.Store.insertBackupRecord(vol.Id, cfg.OutputFileName, fullPath, string(cfg.OutputFormat), backupType, totalBlocks, cfg.BlockSize, sizeInBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -79,7 +90,7 @@ func NewBackup(cfg *BackupConfig) (*Backup, error) {
 }
 
 func (b *Backup) TotalBlocks() int {
-	return b.Record.totalBlocks
+	return b.Record.TotalBlocks
 }
 
 func (b *Backup) BackupType() string {
@@ -90,12 +101,12 @@ func (b *Backup) FileName() string {
 	return b.Config.OutputFileName
 }
 
-func (b *Backup) OutputDirectory() string {
-	return b.Config.OutputDirectory
+func (b *Backup) FullPath() string {
+	return b.Record.FullPath
 }
 
-func (b *Backup) FullPath() string {
-	return fmt.Sprintf("%s/%s", b.OutputDirectory(), b.FileName())
+func (b *Backup) OutputDirectory() string {
+	return b.Config.OutputDirectory
 }
 
 func (b *Backup) SizeInBytes() int {
@@ -135,13 +146,11 @@ func (b *Backup) Run() error {
 			switch {
 			case err == io.EOF:
 				continue
-				// return fmt.Errorf("unexpected end of file at position %d", blockPos)
 			case err != nil:
 				return fmt.Errorf("error reading block data at position %d: %v", blockPos, err)
 			}
 
 			blockBuf = append(blockBuf, blockData...)
-
 		}
 
 		// Ensure the buffer size is the expected size.
@@ -166,12 +175,22 @@ func (b *Backup) Run() error {
 		iteration++
 	}
 
-	// Create and open up the backup file for writing.
-	backupTarget, err := os.OpenFile(b.FullPath(), os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return fmt.Errorf("error opening restore file: %v", err)
+	var backupTarget *os.File
+
+	// Open up the destination file for writing.
+	switch b.Config.OutputFormat {
+	case BackupOutputFormatSTDOUT:
+		backupTarget = os.Stdout
+		defer backupTarget.Close()
+	case BackupOutputFormatFile:
+		backupTarget, err = os.OpenFile(b.FullPath(), os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			return fmt.Errorf("error opening restore file: %v", err)
+		}
+		defer backupTarget.Close()
+	default:
+		return fmt.Errorf("unsupported output format: %s", b.Config.OutputFormat)
 	}
-	defer backupTarget.Close()
 
 	// Query sqlite for only the blocks that need to be backed up.
 	// TODO - Flag zero block hashes, so we can exclude it.
@@ -189,6 +208,7 @@ func (b *Backup) Run() error {
 			return err
 		}
 
+		// Read the block data from the device.
 		blockData, err := readBlock(dev, b.TotalBlocks(), b.Config.BlockSize, position)
 		if err != nil {
 			return err
@@ -279,7 +299,6 @@ func (b *Backup) insertBlocksTransaction(iteration int, bufBlocks int, buf []byt
 	var wg sync.WaitGroup
 
 	// Calculate the hash for each block in the buffer.
-	// fmt.Printf("Calculating block hashes for %d blocks\n", bufBlocks)
 	for i := 0; i < len(buf)/b.Config.BlockSize; i++ {
 		wg.Add(1)
 
@@ -287,10 +306,7 @@ func (b *Backup) insertBlocksTransaction(iteration int, bufBlocks int, buf []byt
 			defer wg.Done()
 
 			startingPos := b.Config.BlockSize * i
-			// TODO - This position may need a - 1
 			endingPos := (startingPos + b.Config.BlockSize)
-
-			// fmt.Printf("Reading range: %d -> %d\n", startingPos, endingPos)
 
 			// Read byte range for the block.
 			blockData := buf[startingPos:endingPos]
@@ -372,7 +388,6 @@ func resolveVolume(store *Store, devicePath string) (*Volume, error) {
 }
 
 func determineBackupType(store *Store, vol *Volume, lastFull BackupRecord) (string, error) {
-	// If there is no last full backup, then this is a full backup.
 	if lastFull == (BackupRecord{}) {
 		return backupTypeFull, nil
 	}

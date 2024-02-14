@@ -12,14 +12,16 @@ type Volume struct {
 }
 
 type BackupRecord struct {
-	Id          int
-	FileName    string
-	VolumeID    int
-	BackupType  string
-	SizeInBytes int
-	totalBlocks int
-	blockSize   int
-	createdAt   time.Time
+	Id           int
+	FileName     string
+	FullPath     string
+	OutputFormat string
+	VolumeID     int
+	BackupType   string
+	SizeInBytes  int
+	TotalBlocks  int
+	BlockSize    int
+	CreatedAt    time.Time
 }
 
 type Block struct {
@@ -55,8 +57,10 @@ func (s Store) SetupDB() error {
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		volume_id INTEGER NOT NULL,
 		file_name TEXT NOT NULL,
+		full_path TEXT NOT NULL,
+		output_format TEXT CHECK(output_format IN ('file', 'stdout')) NOT NULL DEFAULT 'file',
 		backup_type TEXT CHECK(backup_type IN ('full', 'differential')) NOT NULL,
-		size_in_bytes INTEGER DEFAULT 0,
+		size_in_bytes INTEGER NOT NULL DEFAULT 0,
 		total_blocks INTEGER NOT NULL,
 		block_size INTEGER NOT NULL,
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -135,10 +139,10 @@ func (s Store) InsertVolume(name, devicePath string) (Volume, error) {
 	return Volume{Id: int(volumeID), Name: name, DevicePath: devicePath}, nil
 }
 
-func (s Store) insertBackupRecord(volumeID int, fileName string, backupType string, totalBlocks int, blockSize int) (BackupRecord, error) {
+func (s Store) insertBackupRecord(volumeID int, fileName string, fullPath string, outputFormat string, backupType string, totalBlocks, blockSize, sizeInBytes int) (BackupRecord, error) {
 	// Write the backup record to the database
-	insertSQL := `INSERT INTO backups (volume_id, file_name, backup_type, total_blocks, block_size) VALUES (?,?,?,?,?);`
-	res, err := s.Exec(insertSQL, volumeID, fileName, backupType, totalBlocks, blockSize)
+	insertSQL := `INSERT INTO backups (volume_id, file_name, full_path, output_format, backup_type, total_blocks, block_size, size_in_bytes) VALUES (?,?,?,?,?,?,?,?);`
+	res, err := s.Exec(insertSQL, volumeID, fileName, fullPath, outputFormat, backupType, totalBlocks, blockSize, sizeInBytes)
 	if err != nil {
 		return BackupRecord{}, err
 	}
@@ -149,14 +153,56 @@ func (s Store) insertBackupRecord(volumeID int, fileName string, backupType stri
 	}
 
 	return BackupRecord{
-		Id:          int(backupID),
-		FileName:    fileName,
-		VolumeID:    volumeID,
-		BackupType:  backupType,
-		totalBlocks: totalBlocks,
-		blockSize:   blockSize,
-		createdAt:   time.Now(),
+		Id:           int(backupID),
+		FileName:     fileName,
+		FullPath:     fullPath,
+		OutputFormat: outputFormat,
+		VolumeID:     volumeID,
+		BackupType:   backupType,
+		TotalBlocks:  totalBlocks,
+		BlockSize:    blockSize,
+		SizeInBytes:  sizeInBytes,
+		CreatedAt:    time.Now(),
 	}, nil
+}
+
+func (s Store) ListBackups() ([]BackupRecord, error) {
+	var backups []BackupRecord
+	rows, err := s.Query("SELECT id, volume_id, file_name, full_path, output_format, backup_type, total_blocks, block_size, size_in_bytes, created_at FROM backups ORDER BY id ASC")
+	if err != nil {
+		return nil, err
+	}
+
+	for rows.Next() {
+		var id int
+		var volumeID int
+		var fileName string
+		var fullPath string
+		var outputFormat string
+		var backupType string
+		var totalBlocks int
+		var blockSize int
+		var sizeInBytes int
+		var createdAt time.Time
+		if err := rows.Scan(&id, &volumeID, &fileName, &fullPath, &outputFormat, &backupType, &totalBlocks, &blockSize, &sizeInBytes, &createdAt); err != nil {
+			return backups, err
+		}
+
+		backups = append(backups, BackupRecord{
+			Id:           id,
+			FileName:     fileName,
+			FullPath:     fullPath,
+			OutputFormat: outputFormat,
+			VolumeID:     volumeID,
+			BackupType:   backupType,
+			TotalBlocks:  totalBlocks,
+			BlockSize:    blockSize,
+			SizeInBytes:  sizeInBytes,
+			CreatedAt:    createdAt,
+		})
+	}
+
+	return backups, nil
 }
 
 func (s Store) updateBackupSize(backupID int, sizeInBytes int) error {
@@ -179,44 +225,52 @@ func (s Store) findLastFullBackupRecord(volumeID int) (BackupRecord, error) {
 	var totalBlocks int
 	var blockSize int
 	var fileName string
+	var fullPath string
+	var outputFormat string
 	var backupType string
 	var createdAt time.Time
-	row := s.QueryRow("SELECT id, file_name, backup_type, total_blocks, block_size, created_at FROM backups WHERE volume_id = ? AND backup_type = 'full' ORDER BY id DESC LIMIT 1", volumeID)
-	if err := row.Scan(&id, &fileName, &backupType, &totalBlocks, &blockSize, &createdAt); err != nil {
+	row := s.QueryRow("SELECT id, file_name, full_path, output_format, backup_type, total_blocks, block_size, created_at FROM backups WHERE volume_id = ? AND backup_type = 'full' ORDER BY id DESC LIMIT 1", volumeID)
+	if err := row.Scan(&id, &fileName, &fullPath, &outputFormat, &backupType, &totalBlocks, &blockSize, &createdAt); err != nil {
 		return BackupRecord{}, err
 	}
 
 	return BackupRecord{
-		Id:          id,
-		FileName:    fileName,
-		VolumeID:    volumeID,
-		BackupType:  backupType,
-		totalBlocks: totalBlocks,
-		blockSize:   blockSize,
-		createdAt:   createdAt,
+		Id:           id,
+		FileName:     fileName,
+		FullPath:     fullPath,
+		OutputFormat: outputFormat,
+		VolumeID:     volumeID,
+		BackupType:   backupType,
+		TotalBlocks:  totalBlocks,
+		BlockSize:    blockSize,
+		CreatedAt:    createdAt,
 	}, nil
 }
 
 func (s Store) findBackup(id int) (BackupRecord, error) {
 	var totalBlocks int
 	var fileName string
+	var fullPath string
+	var outputFormat string
 	var volumeID int
 	var blockSize int
 	var backupType string
 	var createdAt time.Time
-	row := s.QueryRow("SELECT file_name, volume_id, backup_type, total_blocks, block_size, created_at FROM backups WHERE id = ? ORDER BY id DESC LIMIT 1", id)
-	if err := row.Scan(&fileName, &volumeID, &backupType, &totalBlocks, &blockSize, &createdAt); err != nil {
+	row := s.QueryRow("SELECT file_name, full_path, output_format, volume_id, backup_type, total_blocks, block_size, created_at FROM backups WHERE id = ? ORDER BY id DESC LIMIT 1", id)
+	if err := row.Scan(&fileName, &fullPath, &outputFormat, &volumeID, &backupType, &totalBlocks, &blockSize, &createdAt); err != nil {
 		return BackupRecord{}, err
 	}
 
 	return BackupRecord{
-		Id:          id,
-		FileName:    fileName,
-		VolumeID:    volumeID,
-		BackupType:  backupType,
-		totalBlocks: totalBlocks,
-		blockSize:   blockSize,
-		createdAt:   createdAt,
+		Id:           id,
+		FileName:     fileName,
+		FullPath:     fullPath,
+		OutputFormat: outputFormat,
+		VolumeID:     volumeID,
+		BackupType:   backupType,
+		TotalBlocks:  totalBlocks,
+		BlockSize:    blockSize,
+		CreatedAt:    createdAt,
 	}, nil
 }
 

@@ -74,9 +74,7 @@ func (r *Restore) Run() error {
 }
 
 func (r *Restore) restoreFromBackup(target *os.File, backup BackupRecord) error {
-	// TODO - FIX THIS
-	sourcePath := fmt.Sprintf("%s/%s", backupDirectory, backup.FileName)
-	source, err := os.Open(sourcePath)
+	source, err := os.Open(backup.FullPath)
 	if err != nil {
 		return fmt.Errorf("error opening restore source file: %v", err)
 	}
@@ -91,7 +89,7 @@ func (r *Restore) restoreFromBackup(target *os.File, backup BackupRecord) error 
 
 	for blockNum := 0; blockNum < totalUniqueBlocks; blockNum++ {
 		// Read block data from the source file
-		blockData, err := readBlock(source, totalUniqueBlocks, backup.blockSize, blockNum)
+		blockData, err := readBlock(source, totalUniqueBlocks, backup.BlockSize, blockNum)
 		if err != nil {
 			return fmt.Errorf("error reading block at position %d: %w", blockNum, err)
 		}
@@ -115,7 +113,7 @@ func (r *Restore) restoreFromBackup(target *os.File, backup BackupRecord) error 
 				return fmt.Errorf("failed to scan position: %w", err)
 			}
 
-			_, err = target.WriteAt(blockData, int64(pos*backup.blockSize))
+			_, err = target.WriteAt(blockData, int64(pos*backup.BlockSize))
 			if err != nil {
 				return fmt.Errorf("error writing to restore file: %v", err)
 			}
