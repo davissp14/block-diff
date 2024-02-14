@@ -139,8 +139,8 @@ var restoreCmd = &cobra.Command{
 		wg := &sync.WaitGroup{}
 		if enablePprof {
 			fmt.Println("Starting pprof server on port 6060")
+			wg.Add(1)
 			go func() {
-				wg.Add(1)
 				if err := http.ListenAndServe("localhost:6060", nil); err != nil {
 					fmt.Println(err)
 					return
@@ -238,7 +238,7 @@ func performRestore(backupID int, outputPath string) error {
 		Store:              store,
 		RestoreInputFormat: block.RestoreInputFormatFile,
 		SourceBackupID:     backupID,
-		OutputDirectory:    ".",
+		OutputDirectory:    outputPath,
 		OutputFileName:     "restored.backup",
 	}
 

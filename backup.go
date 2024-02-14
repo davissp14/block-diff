@@ -58,7 +58,7 @@ func NewBackup(cfg *BackupConfig) (*Backup, error) {
 	}
 
 	// Determine the backup type.
-	backupType, err := determineBackupType(cfg.Store, vol, lastFullRecord)
+	backupType, err := determineBackupType(lastFullRecord)
 	if err != nil {
 		return nil, err
 	}
@@ -115,11 +115,11 @@ func (b *Backup) SizeInBytes() int {
 
 func (b *Backup) Run() error {
 	// Open the device for reading.
-	dev, err := os.Open(b.vol.DevicePath)
+	sourceFile, err := os.Open(b.vol.DevicePath)
 	if err != nil {
 		return err
 	}
-	defer dev.Close()
+	defer func() { _ = sourceFile.Close() }()
 
 	// Create a buffer to store the block hashes.
 	// The number of hashes we buffer before writing to the database.
@@ -142,7 +142,7 @@ func (b *Backup) Run() error {
 			blockPos := iteration*bufBlocks + blockNum
 
 			// Read the block data from the device.
-			blockData, err := readBlock(dev, b.TotalBlocks(), b.Config.BlockSize, blockPos)
+			blockData, err := readBlock(sourceFile, b.TotalBlocks(), b.Config.BlockSize, blockPos)
 			switch {
 			case err == io.EOF:
 				continue
@@ -166,65 +166,18 @@ func (b *Backup) Run() error {
 			return err
 		}
 
-		entries := len(blockBuf) / b.Config.BlockSize
+		bufEntries := len(blockBuf) / b.Config.BlockSize
 
 		// Insert the block positions into the database.
-		if err := b.insertBlockPositionsTransaction(iteration, entries, bufBlocks, hashMap); err != nil {
+		if err := b.insertBlockPositionsTransaction(iteration, bufEntries, bufBlocks, hashMap); err != nil {
 			return err
 		}
 		iteration++
 	}
 
-	var backupTarget *os.File
-
-	// Open up the destination file for writing.
-	switch b.Config.OutputFormat {
-	case BackupOutputFormatSTDOUT:
-		backupTarget = os.Stdout
-		defer backupTarget.Close()
-	case BackupOutputFormatFile:
-		backupTarget, err = os.OpenFile(b.FullPath(), os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			return fmt.Errorf("error opening restore file: %v", err)
-		}
-		defer backupTarget.Close()
-	default:
-		return fmt.Errorf("unsupported output format: %s", b.Config.OutputFormat)
-	}
-
-	// Query sqlite for only the blocks that need to be backed up.
-	// TODO - Flag zero block hashes, so we can exclude it.
-	rows, err := b.store.Query("SELECT block_id, MIN(position) AS position FROM block_positions where backup_id = ? GROUP BY block_id ORDER BY position;", b.Record.Id)
+	totalBytesWritten, err := b.createBackup(sourceFile)
 	if err != nil {
-		return err
-	}
-
-	totalBytesWritten := 0
-	// Iterate over each resolved block position and write the block data for that position to the backup file.
-	for rows.Next() {
-		var blockID int
-		var position int
-		if err := rows.Scan(&blockID, &position); err != nil {
-			return err
-		}
-
-		// Read the block data from the device.
-		blockData, err := readBlock(dev, b.TotalBlocks(), b.Config.BlockSize, position)
-		if err != nil {
-			return err
-		}
-
-		// Write blockdata to the backup file
-		_, err = backupTarget.Write(blockData)
-		if err != nil {
-			return fmt.Errorf("error writing to backup file: %v", err)
-		}
-
-		totalBytesWritten += len(blockData)
-	}
-
-	if err := b.store.updateBackupSize(b.Record.Id, totalBytesWritten); err != nil {
-		return err
+		return fmt.Errorf("error creating backup: %v", err)
 	}
 
 	b.Record.SizeInBytes = totalBytesWritten
@@ -232,7 +185,64 @@ func (b *Backup) Run() error {
 	return nil
 }
 
-func (b *Backup) insertBlockPositionsTransaction(iteration int, entries int, bufBlocks int, hashMap map[int]string) error {
+func (b *Backup) createBackup(sourceFile *os.File) (int, error) {
+	var targetFile *os.File
+	if b.Config.OutputFormat == BackupOutputFormatFile {
+		var err error
+		targetFile, err = os.OpenFile(b.FullPath(), os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			return 0, fmt.Errorf("error opening restore file: %v", err)
+		}
+	}
+	if targetFile == nil {
+		targetFile = os.Stdout
+	}
+	defer func() { _ = targetFile.Close() }()
+
+	// Query sqlite for only the blocks that need to be backed up.
+	// TODO - Flag zero block hashes, so we can exclude it.
+	rows, err := b.store.Query("SELECT block_id, MIN(position) AS position FROM block_positions where backup_id = ? GROUP BY block_id ORDER BY position;", b.Record.Id)
+	if err != nil {
+		return 0, err
+	}
+
+	totalBytesWritten := 0
+
+	// Iterate over each resolved block position and write the block data for that position to the backup file.
+	for rows.Next() {
+		var blockID int
+		var position int
+		if err := rows.Scan(&blockID, &position); err != nil {
+			return 0, err
+		}
+
+		// Read the block data from the device.
+		blockData, err := readBlock(sourceFile, b.TotalBlocks(), b.Config.BlockSize, position)
+		if err != nil {
+			return 0, err
+		}
+
+		// Write blockdata to the backup file
+		_, err = targetFile.Write(blockData)
+		if err != nil {
+			return 0, fmt.Errorf("error writing to backup file: %v", err)
+		}
+
+		totalBytesWritten += len(blockData)
+	}
+
+	if err := b.store.updateBackupSize(b.Record.Id, totalBytesWritten); err != nil {
+		return 0, err
+	}
+
+	if err := targetFile.Sync(); err != nil {
+		return 0, fmt.Errorf("error syncing backup file: %v", err)
+	}
+
+	return totalBytesWritten, nil
+}
+
+func (b *Backup) insertBlockPositionsTransaction(iteration int, bufEntries int, bufBlocks int, hashMap map[int]string) error {
 	if len(hashMap) != 0 {
 		// Start a transaction to insert the block positions into the database
 		tx, err := b.store.Begin()
@@ -240,7 +250,7 @@ func (b *Backup) insertBlockPositionsTransaction(iteration int, entries int, buf
 			return err
 		}
 
-		for i := 0; i < entries; i++ {
+		for i := 0; i < bufEntries; i++ {
 			// Determine the position of the chunk.
 			pos := iteration*bufBlocks + i
 
@@ -387,7 +397,7 @@ func resolveVolume(store *Store, devicePath string) (*Volume, error) {
 	return &vol, nil
 }
 
-func determineBackupType(store *Store, vol *Volume, lastFull BackupRecord) (string, error) {
+func determineBackupType(lastFull BackupRecord) (string, error) {
 	if lastFull == (BackupRecord{}) {
 		return backupTypeFull, nil
 	}
