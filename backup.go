@@ -8,7 +8,9 @@ import (
 	"io"
 	"math"
 	"os"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mattn/go-sqlite3"
@@ -173,7 +175,7 @@ func (b *Backup) Run() error {
 		bufEntries := len(blockBuf) / b.Config.BlockSize
 
 		// Insert the block hashes into the database.
-		hashMap, err := b.insertBlocksTransaction(targetFile, iteration, bufEntries, bufBlocks, blockBuf)
+		hashMap, err := b.writeBlocks(targetFile, iteration, bufEntries, bufBlocks, blockBuf)
 		if err != nil {
 			return err
 		}
@@ -184,11 +186,6 @@ func (b *Backup) Run() error {
 		}
 		iteration++
 	}
-
-	// totalBytesWritten, err := b.createBackup(sourceFile)
-	// if err != nil {
-	// 	return fmt.Errorf("error creating backup: %v", err)
-	// }
 
 	b.Record.SizeInBytes = 0
 
@@ -242,14 +239,25 @@ func (b *Backup) insertBlockPositionsTransaction(iteration int, bufEntries int, 
 	return nil
 }
 
-func (b *Backup) insertBlocksTransaction(target *os.File, iteration int, bufEntries int, bufBlocks int, buf []byte) (map[int]string, error) {
-	hashMap := make(map[int]string)
+func (b *Backup) writeBlocks(target *os.File, iteration int, bufEntries int, bufBlocks int, blockBuf []byte) (map[int]string, error) {
+	// Calculate the hash for each block in the buffer.
+	hashMap := b.hashBufferedData(iteration, bufEntries, bufBlocks, blockBuf)
 
 	// Start a transaction to insert the block hashes into the database
 	tx, err := b.store.Begin()
 	if err != nil {
 		return nil, err
 	}
+
+	// Sort the hash map by position.
+	// Note: With deduplication, there's really no reason we need to care about order.
+	// The backups are deterministic, so the order of the hashes will always be the same, which makes it easier to test and verify.
+	// TODO - Work to remove this sort.
+	var hashMapSlice []int
+	for key := range hashMap {
+		hashMapSlice = append(hashMapSlice, key)
+	}
+	sort.Ints(hashMapSlice)
 
 	insertBlockQuery, err := tx.Prepare("INSERT INTO blocks (hash) VALUES (?)")
 	if err != nil {
@@ -258,42 +266,29 @@ func (b *Backup) insertBlocksTransaction(target *os.File, iteration int, bufEntr
 	}
 	defer insertBlockQuery.Close()
 
-	// Calculate the hash for each block in the buffer.
-	for i := 0; i < bufEntries; i++ {
-		startingPos := b.Config.BlockSize * i
-		endingPos := (startingPos + b.Config.BlockSize)
-
-		// Read byte range for the block.
-		blockData := buf[startingPos:endingPos]
-
-		// Calculate the hash for the block.
-		hash := calculateBlockHash(blockData)
-
-		// Determine the position of the chunk.
-		pos := iteration*bufBlocks + i
-
-		hashMap[pos] = hash
-
-		_, err = insertBlockQuery.Exec(hash)
+	for _, pos := range hashMapSlice {
+		// Insert the block hash into the database.
+		_, err = insertBlockQuery.Exec(hashMap[pos])
 		if err != nil {
 			if sqliteErr, ok := err.(sqlite3.Error); ok {
 				// If there's a constraint error, we know the hash is already in the database.
-				// When this is the case we can skip writing the data to the backup.
+				// This also means there's no need to write the block to the backup file.
 				if sqliteErr.Code == sqlite3.ErrConstraint {
-					// fmt.Printf("Hash %s already exists in the database\n", hash)
 					continue
 				}
-				return nil, err
+				return nil, fmt.Errorf("error inserting block hash into database: %v", err)
 			}
 		}
 
-		// Write blockdata to the backup file
-		_, err = target.Write(blockData)
-		if err != nil {
-			tx.Rollback()
-			return nil, fmt.Errorf("error writing to backup file: %v", err)
-		}
+		// Calculate original starting position.
+		startingPos := (pos - (iteration * bufBlocks)) * b.Config.BlockSize
+		endingPos := (startingPos + b.Config.BlockSize)
 
+		// TODO - We should be able to parallelize this.
+		_, err = target.Write(blockBuf[startingPos:endingPos])
+		if err != nil {
+			fmt.Printf("Error writing block to backup file: %v\n", err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -302,6 +297,42 @@ func (b *Backup) insertBlocksTransaction(target *os.File, iteration int, bufEntr
 	}
 
 	return hashMap, nil
+}
+
+func (b Backup) hashBufferedData(iteration int, bufEntries int, bufBlocks int, buf []byte) map[int]string {
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+
+	hashMap := make(map[int]string)
+
+	// Calculate the hash for each block in the buffer.
+	for i := 0; i < bufEntries; i++ {
+		wg.Add(1)
+
+		go func(i int) {
+			defer wg.Done()
+			startingPos := b.Config.BlockSize * i
+			endingPos := (startingPos + b.Config.BlockSize)
+
+			// Read byte range for the block.
+			blockData := buf[startingPos:endingPos]
+
+			// Calculate the hash for the block.
+			hash := calculateBlockHash(blockData)
+
+			// Determine the position of the chunk.
+			pos := iteration*bufBlocks + i
+
+			mu.Lock()
+			hashMap[pos] = hash
+			mu.Unlock()
+
+		}(i)
+	}
+
+	wg.Wait()
+
+	return hashMap
 }
 
 func readBlock(disk *os.File, totalBlocks, blockSize, blockNum int) ([]byte, error) {
