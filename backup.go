@@ -187,7 +187,12 @@ func (b *Backup) Run() error {
 		iteration++
 	}
 
-	b.Record.SizeInBytes = 0
+	s, err := GetTargetSizeInBytes(b.FullPath())
+	if err != nil {
+		return fmt.Errorf("error getting backup size: %v", err)
+	}
+
+	b.Record.SizeInBytes = s
 
 	return nil
 }
