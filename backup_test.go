@@ -37,6 +37,11 @@ func cleanup(t *testing.T) {
 	}
 }
 
+const (
+	fullBackupChecksum      = "c13dee8be1b0b00b2bc26e2b2d97b1bacb177c58ac060ded646e3cc7fe31b5e2"
+	diffWithChangesChecksum = "1282ccd62d56e0dcb4be4a64469405103f8591c23343e5c18f1035a3cc5b2ef3"
+)
+
 func TestFullBackup(t *testing.T) {
 	// Setup sqlite connection
 	store, err := NewStore()
@@ -65,6 +70,8 @@ func TestFullBackup(t *testing.T) {
 	if err := b.Run(); err != nil {
 		t.Fatal(err)
 	}
+
+	compareChecksum(t, b.vol.DevicePath, fullBackupChecksum)
 
 	if b.vol.DevicePath != cfg.DevicePath {
 		t.Errorf("expected device path to be %s, got %s", cfg.DevicePath, b.vol.DevicePath)
@@ -130,6 +137,8 @@ func TestDifferentialBackup(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	compareChecksum(t, b.vol.DevicePath, fullBackupChecksum)
+
 	db, err := NewBackup(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -138,6 +147,9 @@ func TestDifferentialBackup(t *testing.T) {
 	if err := db.Run(); err != nil {
 		t.Fatal(err)
 	}
+
+	// NO changes, so checksum should be the same
+	compareChecksum(t, db.vol.DevicePath, fullBackupChecksum)
 
 	if db.vol.DevicePath != cfg.DevicePath {
 		t.Errorf("expected device path to be %s, got %s", cfg.DevicePath, db.vol.DevicePath)
@@ -185,6 +197,8 @@ func TestDifferentialBackupWithChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	compareChecksum(t, b.vol.DevicePath, fullBackupChecksum)
+
 	totalBlocks, err := b.store.TotalBlocks()
 	if err != nil {
 		t.Fatal(err)
@@ -206,6 +220,8 @@ func TestDifferentialBackupWithChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	compareChecksum(t, db.vol.DevicePath, diffWithChangesChecksum)
+
 	positions, err := store.findBlockPositionsByBackup(db.Record.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -213,6 +229,16 @@ func TestDifferentialBackupWithChanges(t *testing.T) {
 
 	if len(positions) != 1 {
 		t.Fatalf("expected 1 position, got %d", len(positions))
+	}
+}
+
+func compareChecksum(t *testing.T, filePath string, expected string) {
+	actual, err := fileChecksum(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if actual != expected {
+		t.Fatalf("expected checksum to be %s, got %s", expected, actual)
 	}
 }
 

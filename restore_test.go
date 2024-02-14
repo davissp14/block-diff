@@ -36,6 +36,8 @@ func TestFullRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	compareChecksum(t, b.vol.DevicePath, fullBackupChecksum)
+
 	restoreConfig := RestoreConfig{
 		Store:              store,
 		RestoreInputFormat: RestoreInputFormatFile,
@@ -64,19 +66,13 @@ func TestFullRestore(t *testing.T) {
 		t.Fatalf("expected 50 block position, got %d", len(positions))
 	}
 
-	// Compare the original file with the restored file
-	sourceChecksum, err := fileChecksum(b.vol.DevicePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	targetChecksum, err := fileChecksum(restore.FullRestorePath())
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if sourceChecksum != targetChecksum {
-		t.Fatalf("expected checksums to match, got %s and %s", sourceChecksum, targetChecksum)
+	if fullBackupChecksum != targetChecksum {
+		t.Fatalf("expected checksums to match, got %s and %s", fullBackupChecksum, targetChecksum)
 	}
 }
 
@@ -108,6 +104,8 @@ func TestFullRestoreFromDifferential(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	compareChecksum(t, b.vol.DevicePath, fullBackupChecksum)
+
 	db, err := NewBackup(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -119,6 +117,8 @@ func TestFullRestoreFromDifferential(t *testing.T) {
 	if err := db.Run(); err != nil {
 		t.Fatal(err)
 	}
+
+	compareChecksum(t, db.vol.DevicePath, diffWithChangesChecksum)
 
 	// Confirm that the differential backup resulted in a block change.
 	positions, err := store.findBlockPositionsByBackup(db.Record.ID)
@@ -149,18 +149,14 @@ func TestFullRestoreFromDifferential(t *testing.T) {
 	}
 
 	// Compare the original file with the restored file
-	sourceChecksum, err := fileChecksum(db.vol.DevicePath)
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	targetChecksum, err := fileChecksum(restore.FullRestorePath())
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if sourceChecksum != targetChecksum {
-		t.Fatalf("expected checksums to match, got %s and %s", sourceChecksum, targetChecksum)
+	if diffWithChangesChecksum != targetChecksum {
+		t.Fatalf("expected checksums to match, got %s and %s", diffWithChangesChecksum, targetChecksum)
 	}
 }
 
