@@ -286,7 +286,7 @@ func performBackup(devicePath, outputDir, outputFormat string, blockSize int, bu
 
 		fmt.Println("Backup completed successfully!")
 		fmt.Println("=============Info=================")
-		fmt.Printf("Backup Duration: %s\n", time.Now().Sub(b.Record.CreatedAt))
+		fmt.Printf("Backup Duration: %s\n", time.Since(b.Record.CreatedAt))
 		fmt.Printf("Backup file: %s/%s\n", outputDir, b.Record.FileName)
 		fmt.Printf("Backup size %s\n", formatFileSize(float64(b.Record.SizeInBytes)))
 		fmt.Printf("Source device size: %s\n", formatFileSize(float64(sourceSizeInBytes)))

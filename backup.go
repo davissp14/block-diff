@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/mattn/go-sqlite3"
-	_ "github.com/mattn/go-sqlite3"
 )
 
 const (
@@ -304,7 +303,7 @@ func (b *Backup) writeBlocks(target *os.File, iteration int, bufEntries int, buf
 	return hashMap, nil
 }
 
-func (b Backup) hashBufferedData(iteration int, bufEntries int, bufBlocks int, buf []byte) map[int]string {
+func (b *Backup) hashBufferedData(iteration int, bufEntries int, bufBlocks int, buf []byte) map[int]string {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 
