@@ -162,7 +162,7 @@ func TestDifferentialBackupWithChanges(t *testing.T) {
 	defer store.Close()
 
 	setup(store)
-	// defer cleanup(t)
+	defer cleanup(t)
 
 	cfg := &BackupConfig{
 		Store:           store,

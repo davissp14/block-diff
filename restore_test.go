@@ -54,6 +54,16 @@ func TestFullRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Confirm that the differential backup resulted in a block change.
+	positions, err := store.findBlockPositionsByBackup(b.Record.Id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(positions) != 50 {
+		t.Fatalf("expected 50 block position, got %d", len(positions))
+	}
+
 	// Compare the original file with the restored file
 	sourceChecksum, err := fileChecksum(b.vol.DevicePath)
 	if err != nil {
