@@ -8,10 +8,12 @@ import (
 	"io"
 	"math"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/mattn/go-sqlite3"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -118,6 +120,19 @@ func (b *Backup) Run() error {
 	}
 	defer func() { _ = sourceFile.Close() }()
 
+	var targetFile *os.File
+	if b.Config.OutputFormat == BackupOutputFormatFile {
+		var err error
+		targetFile, err = os.OpenFile(b.FullPath(), os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			return fmt.Errorf("error opening restore file: %v", err)
+		}
+	}
+	if targetFile == nil {
+		targetFile = os.Stdout
+	}
+	defer func() { _ = targetFile.Close() }()
+
 	// Create a buffer to store the block hashes.
 	// The number of hashes we buffer before writing to the database.
 	bufSize := b.Config.BlockBufferSize * b.Config.BlockSize
@@ -157,13 +172,13 @@ func (b *Backup) Run() error {
 			blockBuf = tmpBuf
 		}
 
+		bufEntries := len(blockBuf) / b.Config.BlockSize
+
 		// Insert the block hashes into the database.
-		hashMap, err := b.insertBlocksTransaction(iteration, bufBlocks, blockBuf)
+		hashMap, err := b.writeBlocks(targetFile, iteration, bufEntries, bufBlocks, blockBuf)
 		if err != nil {
 			return err
 		}
-
-		bufEntries := len(blockBuf) / b.Config.BlockSize
 
 		// Insert the block positions into the database.
 		if err := b.insertBlockPositionsTransaction(iteration, bufEntries, bufBlocks, hashMap); err != nil {
@@ -172,71 +187,14 @@ func (b *Backup) Run() error {
 		iteration++
 	}
 
-	totalBytesWritten, err := b.createBackup(sourceFile)
+	s, err := GetTargetSizeInBytes(b.FullPath())
 	if err != nil {
-		return fmt.Errorf("error creating backup: %v", err)
+		return fmt.Errorf("error getting backup size: %v", err)
 	}
 
-	b.Record.SizeInBytes = totalBytesWritten
+	b.Record.SizeInBytes = s
 
 	return nil
-}
-
-func (b *Backup) createBackup(sourceFile *os.File) (int, error) {
-	var targetFile *os.File
-	if b.Config.OutputFormat == BackupOutputFormatFile {
-		var err error
-		targetFile, err = os.OpenFile(b.FullPath(), os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			return 0, fmt.Errorf("error opening restore file: %v", err)
-		}
-	}
-	if targetFile == nil {
-		targetFile = os.Stdout
-	}
-	defer func() { _ = targetFile.Close() }()
-
-	// Query sqlite for only the blocks that need to be backed up.
-	// TODO - Flag zero block hashes, so we can exclude it.
-	rows, err := b.store.Query("SELECT block_id, MIN(position) AS position FROM block_positions where backup_id = ? GROUP BY block_id ORDER BY position;", b.Record.ID)
-	if err != nil {
-		return 0, err
-	}
-
-	totalBytesWritten := 0
-
-	// Iterate over each resolved block position and write the block data for that position to the backup file.
-	for rows.Next() {
-		var blockID int
-		var position int
-		if err := rows.Scan(&blockID, &position); err != nil {
-			return 0, err
-		}
-
-		// Read the block data from the device.
-		blockData, err := readBlock(sourceFile, b.TotalBlocks(), b.Config.BlockSize, position)
-		if err != nil {
-			return 0, err
-		}
-
-		// Write blockdata to the backup file
-		_, err = targetFile.Write(blockData)
-		if err != nil {
-			return 0, fmt.Errorf("error writing to backup file: %v", err)
-		}
-
-		totalBytesWritten += len(blockData)
-	}
-
-	if err := b.store.updateBackupSize(b.Record.ID, totalBytesWritten); err != nil {
-		return 0, err
-	}
-
-	if err := targetFile.Sync(); err != nil {
-		return 0, fmt.Errorf("error syncing backup file: %v", err)
-	}
-
-	return totalBytesWritten, nil
 }
 
 func (b *Backup) insertBlockPositionsTransaction(iteration int, bufEntries int, bufBlocks int, hashMap map[int]string) error {
@@ -286,8 +244,9 @@ func (b *Backup) insertBlockPositionsTransaction(iteration int, bufEntries int, 
 	return nil
 }
 
-func (b *Backup) insertBlocksTransaction(iteration int, bufBlocks int, buf []byte) (map[int]string, error) {
-	hashMap := make(map[int]string)
+func (b *Backup) writeBlocks(target *os.File, iteration int, bufEntries int, bufBlocks int, blockBuf []byte) (map[int]string, error) {
+	// Calculate the hash for each block in the buffer.
+	hashMap := b.hashBufferedData(iteration, bufEntries, bufBlocks, blockBuf)
 
 	// Start a transaction to insert the block hashes into the database
 	tx, err := b.store.Begin()
@@ -295,23 +254,68 @@ func (b *Backup) insertBlocksTransaction(iteration int, bufBlocks int, buf []byt
 		return nil, err
 	}
 
-	insertBlockQuery, err := tx.Prepare("INSERT INTO blocks (hash) VALUES (?) ON CONFLICT DO NOTHING")
+	// Sort the hash map by position.
+	// Note: With deduplication, there's really no reason we need to care about order.
+	// The backups are deterministic, so the order of the hashes will always be the same, which makes it easier to test and verify.
+	// TODO - Work to remove this sort.
+	var hashMapSlice []int
+	for key := range hashMap {
+		hashMapSlice = append(hashMapSlice, key)
+	}
+	sort.Ints(hashMapSlice)
+
+	insertBlockQuery, err := tx.Prepare("INSERT INTO blocks (hash) VALUES (?)")
 	if err != nil {
 		tx.Rollback()
 		return nil, err
 	}
 	defer insertBlockQuery.Close()
 
-	var mu sync.Mutex
+	for _, pos := range hashMapSlice {
+		// Insert the block hash into the database.
+		_, err = insertBlockQuery.Exec(hashMap[pos])
+		if err != nil {
+			if sqliteErr, ok := err.(sqlite3.Error); ok {
+				// If there's a constraint error, we know the hash is already in the database.
+				// This also means there's no need to write the block to the backup file.
+				if sqliteErr.Code == sqlite3.ErrConstraint {
+					continue
+				}
+				return nil, fmt.Errorf("error inserting block hash into database: %v", err)
+			}
+		}
+
+		// Calculate original starting position.
+		startingPos := (pos - (iteration * bufBlocks)) * b.Config.BlockSize
+		endingPos := (startingPos + b.Config.BlockSize)
+
+		// TODO - We should be able to parallelize this.
+		_, err = target.Write(blockBuf[startingPos:endingPos])
+		if err != nil {
+			fmt.Printf("Error writing block to backup file: %v\n", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		tx.Rollback()
+		return nil, err
+	}
+
+	return hashMap, nil
+}
+
+func (b Backup) hashBufferedData(iteration int, bufEntries int, bufBlocks int, buf []byte) map[int]string {
 	var wg sync.WaitGroup
+	var mu sync.Mutex
+
+	hashMap := make(map[int]string)
 
 	// Calculate the hash for each block in the buffer.
-	for i := 0; i < len(buf)/b.Config.BlockSize; i++ {
+	for i := 0; i < bufEntries; i++ {
 		wg.Add(1)
 
 		go func(i int) {
 			defer wg.Done()
-
 			startingPos := b.Config.BlockSize * i
 			endingPos := (startingPos + b.Config.BlockSize)
 
@@ -327,26 +331,13 @@ func (b *Backup) insertBlocksTransaction(iteration int, bufBlocks int, buf []byt
 			mu.Lock()
 			hashMap[pos] = hash
 			mu.Unlock()
+
 		}(i)
 	}
 
 	wg.Wait()
 
-	// Insert the block hashes into the database.
-	for _, value := range hashMap {
-		_, err = insertBlockQuery.Exec(value)
-		if err != nil {
-			tx.Rollback()
-			return nil, err
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		tx.Rollback()
-		return nil, err
-	}
-
-	return hashMap, nil
+	return hashMap
 }
 
 func readBlock(disk *os.File, totalBlocks, blockSize, blockNum int) ([]byte, error) {
