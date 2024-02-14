@@ -1,9 +1,7 @@
 package block
 
 import (
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"math"
@@ -13,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cespare/xxhash"
 	"github.com/mattn/go-sqlite3"
 )
 
@@ -398,8 +397,8 @@ func generateBackupName(vol *Volume, backupType string) string {
 }
 
 func calculateBlockHash(blockData []byte) string {
-	hash := sha256.Sum256(blockData)
-	return hex.EncodeToString(hash[:])
+	hash := xxhash.Sum64(blockData)
+	return fmt.Sprint(hash)
 }
 
 func calculateTotalBlocks(blockSize int, sizeInBytes int) int {

@@ -3,6 +3,7 @@ module github.com/davissp14/block-diff
 go 1.21.0
 
 require (
+	github.com/cespare/xxhash v1.1.0
 	github.com/mattn/go-sqlite3 v1.14.22
 	github.com/olekukonko/tablewriter v0.0.5
 	github.com/spf13/cobra v1.8.0
