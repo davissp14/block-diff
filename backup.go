@@ -118,17 +118,18 @@ func (b *Backup) Run() error {
 	}
 	defer func() { _ = sourceFile.Close() }()
 
+	// Open the backup file for writing.
 	var targetFile *os.File
-	if b.Config.OutputFormat == BackupOutputFormatFile {
-		var err error
+	switch b.Config.OutputFormat {
+	case BackupOutputFormatFile:
 		targetFile, err = os.OpenFile(b.FullPath(), os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
 			return fmt.Errorf("error opening restore file: %v", err)
 		}
-	}
-	if targetFile == nil {
+	case BackupOutputFormatSTDOUT:
 		targetFile = os.Stdout
 	}
+
 	defer func() { _ = targetFile.Close() }()
 
 	// Create a buffer to store the block hashes.
@@ -136,52 +137,48 @@ func (b *Backup) Run() error {
 	bufSize := b.Config.BlockBufferSize * b.Config.BlockSize
 
 	// The number of individual blocks we can store in the buffer.
-	bufBlocks := bufSize / b.Config.BlockSize
+	bufCapacity := bufSize / b.Config.BlockSize
 
 	// The current iteration we are on.
 	iteration := 0
 
 	// Read chunks until we have enough to fill the buffer.
-	for iteration*bufBlocks < b.TotalBlocks() {
-		// Create a buffer to store the block hashes.
-		blockBuf := make([]byte, 0, bufSize)
+	for iteration*bufCapacity < b.TotalBlocks() {
+		offset := int64(iteration * bufCapacity * b.Config.BlockSize)
 
-		// Read chunks until we have enough to fill the buffer.
-		for blockNum := 0; blockNum < bufBlocks; blockNum++ {
-			// Determine the position of the chunk.
-			blockPos := iteration*bufBlocks + blockNum
-
-			// Read the block data from the device.
-			blockData, err := readBlock(sourceFile, b.TotalBlocks(), b.Config.BlockSize, blockPos)
-			switch {
-			case err == io.EOF:
-				continue
-			case err != nil:
-				return fmt.Errorf("error reading block data at position %d: %v", blockPos, err)
-			}
-
-			blockBuf = append(blockBuf, blockData...)
+		// Read block data from the source file.
+		blockBuf, err := readBlocks(sourceFile, bufSize, offset)
+		if err != nil {
+			return fmt.Errorf("error reading block data at position %d: %v", iteration*bufCapacity, err)
+		}
+		switch {
+		case err == io.EOF:
+			continue
+		case err != nil:
+			return fmt.Errorf("error reading block data at position %d: %v", offset, err)
 		}
 
-		// Ensure the buffer size is the expected size.
+		// If the buffer is not full, we need to trim it.
 		if len(blockBuf) < bufSize {
 			tmpBuf := make([]byte, len(blockBuf))
 			copy(tmpBuf, blockBuf)
 			blockBuf = tmpBuf
 		}
 
+		// The number of individual blocks in the buffer.
 		bufEntries := len(blockBuf) / b.Config.BlockSize
 
-		// Insert the block hashes into the database.
-		hashMap, err := b.writeBlocks(targetFile, iteration, bufEntries, bufBlocks, blockBuf)
+		// Insert the block positions into the database and write the blocks to the backup file.
+		hashMap, err := b.writeBlocks(targetFile, iteration, bufEntries, bufCapacity, blockBuf)
 		if err != nil {
 			return err
 		}
 
 		// Insert the block positions into the database.
-		if err := b.insertBlockPositionsTransaction(iteration, bufEntries, bufBlocks, hashMap); err != nil {
+		if err := b.insertBlockPositionsTransaction(iteration, bufEntries, bufCapacity, hashMap); err != nil {
 			return err
 		}
+
 		iteration++
 	}
 
@@ -195,81 +192,94 @@ func (b *Backup) Run() error {
 	return nil
 }
 
-func (b *Backup) insertBlockPositionsTransaction(iteration int, bufEntries int, bufBlocks int, hashMap map[int]string) error {
-	if len(hashMap) != 0 {
-		// Start a transaction to insert the block positions into the database
-		tx, err := b.store.Begin()
-		if err != nil {
-			return err
-		}
-
-		var dRefMap map[int]string
-
-		// Query hashes associated with the position range.
-		if b.BackupType() == backupTypeDifferential {
-			dRefMap = make(map[int]string)
-			posStartRange := iteration * bufBlocks
-			posEndRange := posStartRange + bufBlocks
-
-			rows, err := b.store.Query("SELECT bp.position, hash FROM blocks b JOIN block_positions bp ON bp.block_id = b.id WHERE bp.backup_id = ? AND bp.position >= ? AND bp.position < ?", b.lastFullRecord.ID, posStartRange, posEndRange)
-			if err != nil {
-				return err
-			}
-
-			for rows.Next() {
-				var hash string
-				var position int
-				if err := rows.Scan(&position, &hash); err != nil {
-					switch {
-					case err == sql.ErrNoRows:
-						break
-					default:
-						return err
-					}
-				}
-				dRefMap[position] = hash
-			}
-		}
-
-		// TODO - Eliminate the select portion of the insert statement.
-		// TODO - Consider using a bulk insert.
-		query, err := tx.Prepare("INSERT INTO block_positions (backup_id, block_id, position) VALUES (?, (SELECT id FROM blocks WHERE hash = ?), ?)")
-		if err != nil {
-			tx.Rollback()
-			return err
-		}
-		defer query.Close()
-
-		for i := 0; i < bufEntries; i++ {
-			// Determine the position of the chunk.
-			pos := iteration*bufBlocks + i
-
-			if b.BackupType() == backupTypeDifferential {
-				// Skip if the hash was already registered by the last full backup.
-				if _, ok := dRefMap[pos]; ok && dRefMap[pos] == hashMap[pos] {
-					continue
-				}
-			}
-
-			_, err = query.Exec(b.Record.ID, hashMap[pos], pos)
-			if err != nil {
-				tx.Rollback()
-				return err
-			}
-		}
-
-		// Commit the transaction
-		if err := tx.Commit(); err != nil {
-			return err
-		}
+func (b *Backup) insertBlockPositionsTransaction(iteration int, bufEntries int, bufCapacity int, hashMap map[int]string) error {
+	if len(hashMap) == 0 {
+		return nil
+	}
+	// Start a transaction to insert the block positions into the database
+	tx, err := b.store.Begin()
+	if err != nil {
+		return err
 	}
 
-	return nil
+	posStartRange := iteration * bufCapacity
+	posEndRange := posStartRange + bufCapacity
+
+	dupMap := make(map[int]string, bufEntries)
+
+	// Query the positions range against the last full backup.
+	if b.BackupType() == backupTypeDifferential {
+		// Query hashes associated with the position range.
+		rows, err := b.store.Query("SELECT b.id, bp.position, hash FROM blocks b JOIN block_positions bp ON bp.block_id = b.id WHERE bp.backup_id = ? AND bp.position >= ? AND bp.position < ?", b.lastFullRecord.ID, posStartRange, posEndRange)
+		if err != nil {
+			return err
+		}
+
+		for rows.Next() {
+			var id int
+			var hash string
+			var position int
+			if err := rows.Scan(&id, &position, &hash); err != nil {
+				switch {
+				case err == sql.ErrNoRows:
+					break
+				default:
+					return err
+				}
+			}
+			dupMap[position] = hash
+		}
+		rows.Close()
+	}
+
+	// Prepare for bulk insert.
+	baseStmt := "INSERT INTO block_positions (backup_id, block_id, position) VALUES "
+	var valueStrings []string
+	var valueArgs []interface{}
+
+	for i := 0; i < bufEntries; i++ {
+		pos := posStartRange + i
+
+		if b.BackupType() == backupTypeDifferential {
+			// Skip if the hash is the same as the last full backup.
+			if _, ok := dupMap[pos]; ok && dupMap[pos] == hashMap[pos] {
+				continue
+			}
+		}
+		valueStrings = append(valueStrings, "(?, (SELECT id FROM blocks WHERE hash = ?), ?)")
+		valueArgs = append(valueArgs, b.Record.ID, hashMap[pos], pos)
+	}
+
+	// If there are no inserts, we can abort the transaction.
+	if len(valueStrings) == 0 {
+		return tx.Rollback()
+	}
+
+	// Append the value strings to the base statement.
+	stmt := baseStmt + strings.Join(valueStrings, ",")
+
+	// Prepare the query.
+	query, err := tx.Prepare(stmt)
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+	defer query.Close()
+
+	// Execute the query.
+	_, err = query.Exec(valueArgs...)
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	// Commit the transaction
+	return tx.Commit()
 }
 
-func (b *Backup) writeBlocks(target *os.File, iteration int, bufEntries int, bufBlocks int, blockBuf []byte) (map[int]string, error) {
+func (b *Backup) writeBlocks(target *os.File, iteration int, bufEntries int, bufCapacity int, blockBuf []byte) (map[int]string, error) {
 	// Calculate the hash for each block in the buffer.
-	hashMap := b.hashBufferedData(iteration, bufEntries, bufBlocks, blockBuf)
+	hashMap := b.hashBufferedData(iteration, bufEntries, bufCapacity, blockBuf)
 
 	// Start a transaction to insert the block hashes into the database
 	tx, err := b.store.Begin()
@@ -309,7 +319,7 @@ func (b *Backup) writeBlocks(target *os.File, iteration int, bufEntries int, buf
 		}
 
 		// Calculate original starting position.
-		startingPos := (pos - (iteration * bufBlocks)) * b.Config.BlockSize
+		startingPos := (pos - (iteration * bufCapacity)) * b.Config.BlockSize
 		endingPos := (startingPos + b.Config.BlockSize)
 
 		// TODO - We should be able to parallelize this.
@@ -327,7 +337,7 @@ func (b *Backup) writeBlocks(target *os.File, iteration int, bufEntries int, buf
 	return hashMap, nil
 }
 
-func (b *Backup) hashBufferedData(iteration int, bufEntries int, bufBlocks int, buf []byte) map[int]string {
+func (b *Backup) hashBufferedData(iteration int, bufEntries int, bufCapacity int, buf []byte) map[int]string {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 
@@ -349,12 +359,11 @@ func (b *Backup) hashBufferedData(iteration int, bufEntries int, bufBlocks int, 
 			hash := calculateBlockHash(blockData)
 
 			// Determine the position of the chunk.
-			pos := iteration*bufBlocks + i
+			pos := iteration*bufCapacity + i
 
 			mu.Lock()
 			hashMap[pos] = hash
 			mu.Unlock()
-
 		}(i)
 	}
 
@@ -363,9 +372,42 @@ func (b *Backup) hashBufferedData(iteration int, bufEntries int, bufBlocks int, 
 	return hashMap
 }
 
+func readBlocks(file *os.File, bufSize int, offset int64) ([]byte, error) {
+	buffer := make([]byte, bufSize)
+
+	// Calculate the end range for the buffer as well as the end of the file.
+	endRange := offset + int64(bufSize)
+	endOfFile, err := file.Seek(0, io.SeekEnd)
+	if err != nil {
+		return nil, err
+	}
+
+	// If the end range exceeds the end of the file, we need to trim the buffer.
+	if endRange > endOfFile {
+		endRange = endOfFile
+		trimmedBufSize := endRange - offset
+		if trimmedBufSize <= 0 {
+			return nil, io.EOF
+		}
+		buffer = make([]byte, trimmedBufSize)
+	}
+
+	_, err = file.Seek(offset, 0)
+	if err != nil {
+		return nil, err
+	}
+	_, err = file.Read(buffer)
+	if err != nil {
+		return nil, err
+	}
+
+	return buffer, nil
+}
+
+// Deprecated - use readblocks instead.
 func readBlock(disk *os.File, totalBlocks, blockSize, blockNum int) ([]byte, error) {
-	offset := int64(blockSize * blockNum)
 	buffer := make([]byte, blockSize)
+	offset := int64(blockSize * blockNum)
 
 	endRange := blockSize*blockNum + blockSize
 	endOfFile := blockSize * totalBlocks

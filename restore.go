@@ -89,6 +89,7 @@ func (r *Restore) restoreFromBackup(target *os.File, backup BackupRecord) error 
 
 	for blockNum := 0; blockNum < totalUniqueBlocks; blockNum++ {
 		// Read block data from the source file
+		// TODO - Rework this to use readblocks.
 		blockData, err := readBlock(source, totalUniqueBlocks, backup.BlockSize, blockNum)
 		if err != nil {
 			return fmt.Errorf("error reading block at position %d: %w", blockNum, err)
