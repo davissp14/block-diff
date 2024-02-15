@@ -205,23 +205,24 @@ func (b *Backup) insertBlockPositionsTransaction(iteration int, bufEntries int, 
 		return err
 	}
 
+	posStartRange := iteration * bufBlocks
+	posEndRange := posStartRange + bufBlocks
 	var dRefMap map[int]string
 
-	// Query hashes associated with the position range.
 	if b.BackupType() == backupTypeDifferential {
 		dRefMap = make(map[int]string)
-		posStartRange := iteration * bufBlocks
-		posEndRange := posStartRange + bufBlocks
 
-		rows, err := b.store.Query("SELECT bp.position, hash FROM blocks b JOIN block_positions bp ON bp.block_id = b.id WHERE bp.backup_id = ? AND bp.position >= ? AND bp.position < ?", b.lastFullRecord.ID, posStartRange, posEndRange)
+		// Query hashes associated with the position range.
+		rows, err := b.store.Query("SELECT b.id, bp.position, hash FROM blocks b JOIN block_positions bp ON bp.block_id = b.id WHERE bp.backup_id = ? AND bp.position >= ? AND bp.position < ?", b.lastFullRecord.ID, posStartRange, posEndRange)
 		if err != nil {
 			return err
 		}
 
 		for rows.Next() {
+			var id int
 			var hash string
 			var position int
-			if err := rows.Scan(&position, &hash); err != nil {
+			if err := rows.Scan(&id, &position, &hash); err != nil {
 				switch {
 				case err == sql.ErrNoRows:
 					break
@@ -231,16 +232,15 @@ func (b *Backup) insertBlockPositionsTransaction(iteration int, bufEntries int, 
 			}
 			dRefMap[position] = hash
 		}
+		rows.Close()
 	}
 
 	var valueStrings []string
 	var valueArgs []interface{}
-
 	baseStmt := "INSERT INTO block_positions (backup_id, block_id, position) VALUES "
 
 	for i := 0; i < bufEntries; i++ {
-		// Determine the position of the block.
-		pos := iteration*bufBlocks + i
+		pos := posStartRange + i
 
 		if b.BackupType() == backupTypeDifferential {
 			// Skip if the hash was already registered by the last full backup.
@@ -248,17 +248,19 @@ func (b *Backup) insertBlockPositionsTransaction(iteration int, bufEntries int, 
 				continue
 			}
 		}
-
 		valueStrings = append(valueStrings, "(?, (SELECT id FROM blocks WHERE hash = ?), ?)")
 		valueArgs = append(valueArgs, b.Record.ID, hashMap[pos], pos)
 	}
 
+	// If there are no inserts, we can abort the transaction.
 	if len(valueStrings) == 0 {
 		return tx.Rollback()
 	}
 
+	// Append the value strings to the base statement.
 	stmt := baseStmt + strings.Join(valueStrings, ",")
 
+	// Prepare the query.
 	query, err := tx.Prepare(stmt)
 	if err != nil {
 		tx.Rollback()
@@ -266,6 +268,7 @@ func (b *Backup) insertBlockPositionsTransaction(iteration int, bufEntries int, 
 	}
 	defer query.Close()
 
+	// Execute the query.
 	_, err = query.Exec(valueArgs...)
 	if err != nil {
 		tx.Rollback()
