@@ -404,7 +404,7 @@ func readBlocks(file *os.File, bufSize int, offset int64) ([]byte, error) {
 	return buffer, nil
 }
 
-// TODO - Reduce the number of seeds by reading in the whole buffer at once.
+// Deprecated - use readblocks instead.
 func readBlock(disk *os.File, totalBlocks, blockSize, blockNum int) ([]byte, error) {
 	buffer := make([]byte, blockSize)
 	offset := int64(blockSize * blockNum)
