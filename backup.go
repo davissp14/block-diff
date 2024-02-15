@@ -145,7 +145,6 @@ func (b *Backup) Run() error {
 	// Read chunks until we have enough to fill the buffer.
 	for iteration*bufCapacity < b.TotalBlocks() {
 		offset := int64(iteration * bufCapacity * b.Config.BlockSize)
-
 		// Read block data from the source file.
 		blockBuf, err := readBlocks(sourceFile, bufSize, offset)
 		if err != nil {
@@ -195,11 +194,6 @@ func (b *Backup) Run() error {
 func (b *Backup) insertBlockPositionsTransaction(iteration int, bufEntries int, bufCapacity int, hashMap map[int]string) error {
 	if len(hashMap) == 0 {
 		return nil
-	}
-	// Start a transaction to insert the block positions into the database
-	tx, err := b.store.Begin()
-	if err != nil {
-		return err
 	}
 
 	posStartRange := iteration * bufCapacity
@@ -252,7 +246,13 @@ func (b *Backup) insertBlockPositionsTransaction(iteration int, bufEntries int, 
 
 	// If there are no inserts, we can abort the transaction.
 	if len(valueStrings) == 0 {
-		return tx.Rollback()
+		return nil
+	}
+
+	// Start a transaction to insert the block positions into the database
+	tx, err := b.store.Begin()
+	if err != nil {
+		return err
 	}
 
 	// Append the value strings to the base statement.
@@ -261,7 +261,7 @@ func (b *Backup) insertBlockPositionsTransaction(iteration int, bufEntries int, 
 	// Prepare the query.
 	query, err := tx.Prepare(stmt)
 	if err != nil {
-		tx.Rollback()
+		handleRollback(tx)
 		return err
 	}
 	defer query.Close()
@@ -269,11 +269,10 @@ func (b *Backup) insertBlockPositionsTransaction(iteration int, bufEntries int, 
 	// Execute the query.
 	_, err = query.Exec(valueArgs...)
 	if err != nil {
-		tx.Rollback()
+		handleRollback(tx)
 		return err
 	}
 
-	// Commit the transaction
 	return tx.Commit()
 }
 
@@ -288,8 +287,7 @@ func (b *Backup) writeBlocks(target *os.File, iteration int, bufEntries int, buf
 
 	duplicateHashes, err := b.identifyDuplicateBlocks(reverseMap)
 	if err != nil {
-		return nil, err
-
+		return nil, fmt.Errorf("error identifying duplicate blocks: %v", err)
 	}
 
 	querySlice := []string{}
@@ -325,9 +323,6 @@ func (b *Backup) writeBlocks(target *os.File, iteration int, bufEntries int, buf
 	insertableSlice := []int{}
 	for _, pos := range insertablePositions {
 		insertableSlice = append(insertableSlice, pos)
-	}
-
-	for _, pos := range insertableSlice {
 		queryValues = append(queryValues, hashMap[pos])
 	}
 
@@ -336,20 +331,21 @@ func (b *Backup) writeBlocks(target *os.File, iteration int, bufEntries int, buf
 		return nil, err
 	}
 
+	// TODO - There may be a limit to the number of placeholders we can use in a query.
 	q := "INSERT INTO blocks (hash) VALUES  " + strings.Join(querySlice, ",")
 	insertBlockQuery, err := tx.Prepare(q)
 	if err != nil {
-		tx.Rollback()
+		handleRollback(tx)
 		return nil, err
 	}
 
 	_, err = insertBlockQuery.Exec(queryValues...)
 	if err != nil {
-		return nil, fmt.Errorf("error inserting block %+v hash into database: %v", insertablePositions, err)
+		return nil, fmt.Errorf("error inserting block hash into database: %v", err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		tx.Rollback()
+		handleRollback(tx)
 		return nil, err
 	}
 
@@ -361,7 +357,7 @@ func (b *Backup) writeBlocks(target *os.File, iteration int, bufEntries int, buf
 
 		_, err = target.Write(blockBuf[startingPos:endingPos])
 		if err != nil {
-			fmt.Printf("Error writing block to backup file: %v\n", err)
+			return nil, fmt.Errorf("error writing block to backup file: %v", err)
 		}
 	}
 
@@ -395,11 +391,10 @@ func (b *Backup) identifyDuplicateBlocks(reverseMap map[string]int) ([]string, e
 		}
 		duplicateHashes = append(duplicateHashes, hash)
 	}
+	defer rows.Close()
 	if rows.Err() != nil {
 		return nil, rows.Err()
 	}
-
-	rows.Close()
 
 	return duplicateHashes, nil
 }
@@ -538,4 +533,10 @@ func calculateBlockHash(blockData []byte) string {
 func calculateTotalBlocks(blockSize int, sizeInBytes int) int {
 	totalBlocks := float64(sizeInBytes) / float64(blockSize)
 	return int(math.Ceil(totalBlocks))
+}
+
+func handleRollback(tx *sql.Tx) {
+	if err := tx.Rollback(); err != nil {
+		fmt.Printf("error rolling back transaction: %v", err)
+	}
 }
