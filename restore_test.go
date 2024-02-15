@@ -104,6 +104,19 @@ func TestFullRestoreFromDifferential(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Confirm that the differential backup resulted in a block change.
+	positions, err := store.findBlockPositionsByBackup(b.Record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(positions) != 50 {
+		t.Fatalf("expected 1 block position, got %d", len(positions))
+	}
+
+	// for _, p := range positions {
+	// 	// fmt.Printf("block position: %d, block_id: %d\n", p.position, p.blockID)
+	// }
 	compareChecksum(t, b.vol.DevicePath, fullBackupChecksum)
 
 	db, err := NewBackup(cfg)
@@ -121,7 +134,7 @@ func TestFullRestoreFromDifferential(t *testing.T) {
 	compareChecksum(t, db.vol.DevicePath, diffWithChangesChecksum)
 
 	// Confirm that the differential backup resulted in a block change.
-	positions, err := store.findBlockPositionsByBackup(db.Record.ID)
+	positions, err = store.findBlockPositionsByBackup(db.Record.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -274,7 +274,7 @@ func (s Store) findBackup(id int) (BackupRecord, error) {
 
 func (s Store) findBlockPositionsByBackup(backupID int) ([]BlockPosition, error) {
 	var positions []BlockPosition
-	rows, err := s.Query("SELECT id, position, block_id FROM block_positions WHERE backup_id = ?;", backupID)
+	rows, err := s.Query("SELECT id, position, block_id FROM block_positions WHERE backup_id = ? ORDER BY position ASC;", backupID)
 	if err != nil {
 		return nil, err
 	}
