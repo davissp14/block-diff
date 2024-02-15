@@ -196,75 +196,84 @@ func (b *Backup) Run() error {
 }
 
 func (b *Backup) insertBlockPositionsTransaction(iteration int, bufEntries int, bufBlocks int, hashMap map[int]string) error {
-	if len(hashMap) != 0 {
-		// Start a transaction to insert the block positions into the database
-		tx, err := b.store.Begin()
+	if len(hashMap) == 0 {
+		return nil
+	}
+	// Start a transaction to insert the block positions into the database
+	tx, err := b.store.Begin()
+	if err != nil {
+		return err
+	}
+
+	var dRefMap map[int]string
+
+	// Query hashes associated with the position range.
+	if b.BackupType() == backupTypeDifferential {
+		dRefMap = make(map[int]string)
+		posStartRange := iteration * bufBlocks
+		posEndRange := posStartRange + bufBlocks
+
+		rows, err := b.store.Query("SELECT bp.position, hash FROM blocks b JOIN block_positions bp ON bp.block_id = b.id WHERE bp.backup_id = ? AND bp.position >= ? AND bp.position < ?", b.lastFullRecord.ID, posStartRange, posEndRange)
 		if err != nil {
 			return err
 		}
 
-		var dRefMap map[int]string
-
-		// Query hashes associated with the position range.
-		if b.BackupType() == backupTypeDifferential {
-			dRefMap = make(map[int]string)
-			posStartRange := iteration * bufBlocks
-			posEndRange := posStartRange + bufBlocks
-
-			rows, err := b.store.Query("SELECT bp.position, hash FROM blocks b JOIN block_positions bp ON bp.block_id = b.id WHERE bp.backup_id = ? AND bp.position >= ? AND bp.position < ?", b.lastFullRecord.ID, posStartRange, posEndRange)
-			if err != nil {
-				return err
-			}
-
-			for rows.Next() {
-				var hash string
-				var position int
-				if err := rows.Scan(&position, &hash); err != nil {
-					switch {
-					case err == sql.ErrNoRows:
-						break
-					default:
-						return err
-					}
-				}
-				dRefMap[position] = hash
-			}
-		}
-
-		// TODO - Eliminate the select portion of the insert statement.
-		// TODO - Consider using a bulk insert.
-		query, err := tx.Prepare("INSERT INTO block_positions (backup_id, block_id, position) VALUES (?, (SELECT id FROM blocks WHERE hash = ?), ?)")
-		if err != nil {
-			tx.Rollback()
-			return err
-		}
-		defer query.Close()
-
-		for i := 0; i < bufEntries; i++ {
-			// Determine the position of the chunk.
-			pos := iteration*bufBlocks + i
-
-			if b.BackupType() == backupTypeDifferential {
-				// Skip if the hash was already registered by the last full backup.
-				if _, ok := dRefMap[pos]; ok && dRefMap[pos] == hashMap[pos] {
-					continue
+		for rows.Next() {
+			var hash string
+			var position int
+			if err := rows.Scan(&position, &hash); err != nil {
+				switch {
+				case err == sql.ErrNoRows:
+					break
+				default:
+					return err
 				}
 			}
-
-			_, err = query.Exec(b.Record.ID, hashMap[pos], pos)
-			if err != nil {
-				tx.Rollback()
-				return err
-			}
-		}
-
-		// Commit the transaction
-		if err := tx.Commit(); err != nil {
-			return err
+			dRefMap[position] = hash
 		}
 	}
 
-	return nil
+	var valueStrings []string
+	var valueArgs []interface{}
+
+	baseStmt := "INSERT INTO block_positions (backup_id, block_id, position) VALUES "
+
+	for i := 0; i < bufEntries; i++ {
+		// Determine the position of the block.
+		pos := iteration*bufBlocks + i
+
+		if b.BackupType() == backupTypeDifferential {
+			// Skip if the hash was already registered by the last full backup.
+			if _, ok := dRefMap[pos]; ok && dRefMap[pos] == hashMap[pos] {
+				continue
+			}
+		}
+
+		valueStrings = append(valueStrings, "(?, (SELECT id FROM blocks WHERE hash = ?), ?)")
+		valueArgs = append(valueArgs, b.Record.ID, hashMap[pos], pos)
+	}
+
+	if len(valueStrings) == 0 {
+		return tx.Rollback()
+	}
+
+	stmt := baseStmt + strings.Join(valueStrings, ",")
+
+	query, err := tx.Prepare(stmt)
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+	defer query.Close()
+
+	_, err = query.Exec(valueArgs...)
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	// Commit the transaction
+	return tx.Commit()
 }
 
 func (b *Backup) writeBlocks(target *os.File, iteration int, bufEntries int, bufBlocks int, blockBuf []byte) (map[int]string, error) {
