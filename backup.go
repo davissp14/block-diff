@@ -6,7 +6,7 @@ import (
 	"io"
 	"math"
 	"os"
-	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -353,7 +353,7 @@ func (b *Backup) writeBlocks(target *os.File, iteration int, bufEntries int, buf
 		return nil, err
 	}
 
-	slices.Sort(insertableSlice)
+	sort.Ints(insertableSlice)
 
 	for _, pos := range insertableSlice {
 		startingPos := (pos - (iteration * bufCapacity)) * b.Config.BlockSize
