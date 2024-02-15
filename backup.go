@@ -6,13 +6,13 @@ import (
 	"io"
 	"math"
 	"os"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/cespare/xxhash"
-	"github.com/mattn/go-sqlite3"
+	_ "github.com/mattn/go-sqlite3"
 )
 
 const (
@@ -281,52 +281,71 @@ func (b *Backup) writeBlocks(target *os.File, iteration int, bufEntries int, buf
 	// Calculate the hash for each block in the buffer.
 	hashMap := b.hashBufferedData(iteration, bufEntries, bufCapacity, blockBuf)
 
-	// Start a transaction to insert the block hashes into the database
+	reverseMap := make(map[string]int)
+	for k, v := range hashMap {
+		reverseMap[v] = k
+	}
+
+	duplicateHashes, err := b.identifyDuplicateBlocks(reverseMap)
+	if err != nil {
+		return nil, err
+
+	}
+
+	querySlice := []string{}
+	queryValues := []interface{}{}
+
+	// Use a map to force unique hashes.
+	insertablePositions := map[string]int{}
+
+	// Exclude hashes that already exist in the database from the insert.
+	for hash, pos := range reverseMap {
+		found := false
+		for _, dup := range duplicateHashes {
+			if hash == dup {
+				found = true
+				break
+			}
+		}
+
+		if found {
+			continue
+		}
+
+		insertablePositions[hash] = pos
+		querySlice = append(querySlice, "(?)")
+	}
+
+	// If there are no insertable positions, we can return early.
+	if len(insertablePositions) == 0 {
+		return hashMap, nil
+	}
+
+	// Convert the insertable positions to a slice.
+	insertableSlice := []int{}
+	for _, pos := range insertablePositions {
+		insertableSlice = append(insertableSlice, pos)
+	}
+
+	for _, pos := range insertableSlice {
+		queryValues = append(queryValues, hashMap[pos])
+	}
+
 	tx, err := b.store.Begin()
 	if err != nil {
 		return nil, err
 	}
 
-	// Sort the hash map by position.
-	// Note: With deduplication, there's really no reason we need to care about order.
-	// The backups are deterministic, so the order of the hashes will always be the same, which makes it easier to test and verify.
-	// TODO - Work to remove this sort.
-	var hashMapSlice []int
-	for key := range hashMap {
-		hashMapSlice = append(hashMapSlice, key)
-	}
-	sort.Ints(hashMapSlice)
-
-	insertBlockQuery, err := tx.Prepare("INSERT INTO blocks (hash) VALUES (?)")
+	q := "INSERT INTO blocks (hash) VALUES  " + strings.Join(querySlice, ",")
+	insertBlockQuery, err := tx.Prepare(q)
 	if err != nil {
 		tx.Rollback()
 		return nil, err
 	}
-	defer insertBlockQuery.Close()
 
-	for _, pos := range hashMapSlice {
-		// Insert the block hash into the database.
-		_, err = insertBlockQuery.Exec(hashMap[pos])
-		if err != nil {
-			if sqliteErr, ok := err.(sqlite3.Error); ok {
-				// If there's a constraint error, we know the hash is already in the database.
-				// This also means there's no need to write the block to the backup file.
-				if sqliteErr.Code == sqlite3.ErrConstraint {
-					continue
-				}
-				return nil, fmt.Errorf("error inserting block hash into database: %v", err)
-			}
-		}
-
-		// Calculate original starting position.
-		startingPos := (pos - (iteration * bufCapacity)) * b.Config.BlockSize
-		endingPos := (startingPos + b.Config.BlockSize)
-
-		// TODO - We should be able to parallelize this.
-		_, err = target.Write(blockBuf[startingPos:endingPos])
-		if err != nil {
-			fmt.Printf("Error writing block to backup file: %v\n", err)
-		}
+	_, err = insertBlockQuery.Exec(queryValues...)
+	if err != nil {
+		return nil, fmt.Errorf("error inserting block %+v hash into database: %v", insertablePositions, err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -334,7 +353,55 @@ func (b *Backup) writeBlocks(target *os.File, iteration int, bufEntries int, buf
 		return nil, err
 	}
 
+	slices.Sort(insertableSlice)
+
+	for _, pos := range insertableSlice {
+		startingPos := (pos - (iteration * bufCapacity)) * b.Config.BlockSize
+		endingPos := (startingPos + b.Config.BlockSize)
+
+		_, err = target.Write(blockBuf[startingPos:endingPos])
+		if err != nil {
+			fmt.Printf("Error writing block to backup file: %v\n", err)
+		}
+	}
+
 	return hashMap, nil
+}
+
+func (b *Backup) identifyDuplicateBlocks(reverseMap map[string]int) ([]string, error) {
+	qValues := []interface{}{}
+	for hash := range reverseMap {
+		qValues = append(qValues, hash)
+	}
+
+	placeholders := strings.Trim(strings.Repeat("?,", len(qValues)), ",")
+	query := "SELECT DISTINCT hash FROM blocks WHERE hash IN (" + placeholders + ")"
+	rows, err := b.store.Query(query, qValues...)
+	if err != nil {
+		return nil, err
+	}
+
+	duplicateHashes := []string{}
+
+	for rows.Next() {
+		var hash string
+		if err := rows.Scan(&hash); err != nil {
+			switch {
+			case err == sql.ErrNoRows:
+				break
+			case err != nil:
+				return nil, err
+			}
+		}
+		duplicateHashes = append(duplicateHashes, hash)
+	}
+	if rows.Err() != nil {
+		return nil, rows.Err()
+	}
+
+	rows.Close()
+
+	return duplicateHashes, nil
 }
 
 func (b *Backup) hashBufferedData(iteration int, bufEntries int, bufCapacity int, buf []byte) map[int]string {
