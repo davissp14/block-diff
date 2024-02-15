@@ -118,17 +118,18 @@ func (b *Backup) Run() error {
 	}
 	defer func() { _ = sourceFile.Close() }()
 
+	// Open the backup file for writing.
 	var targetFile *os.File
-	if b.Config.OutputFormat == BackupOutputFormatFile {
-		var err error
+	switch b.Config.OutputFormat {
+	case BackupOutputFormatFile:
 		targetFile, err = os.OpenFile(b.FullPath(), os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
 			return fmt.Errorf("error opening restore file: %v", err)
 		}
-	}
-	if targetFile == nil {
+	case BackupOutputFormatSTDOUT:
 		targetFile = os.Stdout
 	}
+
 	defer func() { _ = targetFile.Close() }()
 
 	// Create a buffer to store the block hashes.
@@ -136,22 +137,22 @@ func (b *Backup) Run() error {
 	bufSize := b.Config.BlockBufferSize * b.Config.BlockSize
 
 	// The number of individual blocks we can store in the buffer.
-	bufBlocks := bufSize / b.Config.BlockSize
+	bufCapacity := bufSize / b.Config.BlockSize
 
 	// The current iteration we are on.
 	iteration := 0
 
 	// Read chunks until we have enough to fill the buffer.
-	for iteration*bufBlocks < b.TotalBlocks() {
+	for iteration*bufCapacity < b.TotalBlocks() {
 		// Create a buffer to store the block hashes.
 		blockBuf := make([]byte, 0, bufSize)
 
-		// Read chunks until we have enough to fill the buffer.
-		for blockNum := 0; blockNum < bufBlocks; blockNum++ {
+		// Read blocks until we have enough to fill the buffer.
+		for blockNum := 0; blockNum < bufCapacity; blockNum++ {
 			// Determine the position of the chunk.
-			blockPos := iteration*bufBlocks + blockNum
+			blockPos := iteration*bufCapacity + blockNum
 
-			// Read the block data from the device.
+			// Read block data from the source file.
 			blockData, err := readBlock(sourceFile, b.TotalBlocks(), b.Config.BlockSize, blockPos)
 			switch {
 			case err == io.EOF:
@@ -163,25 +164,27 @@ func (b *Backup) Run() error {
 			blockBuf = append(blockBuf, blockData...)
 		}
 
-		// Ensure the buffer size is the expected size.
+		// If the buffer is not full, we need to trim it.
 		if len(blockBuf) < bufSize {
 			tmpBuf := make([]byte, len(blockBuf))
 			copy(tmpBuf, blockBuf)
 			blockBuf = tmpBuf
 		}
 
+		// The number of individual blocks in the buffer.
 		bufEntries := len(blockBuf) / b.Config.BlockSize
 
-		// Insert the block hashes into the database.
-		hashMap, err := b.writeBlocks(targetFile, iteration, bufEntries, bufBlocks, blockBuf)
+		// Insert the block positions into the database and write the blocks to the backup file.
+		hashMap, err := b.writeBlocks(targetFile, iteration, bufEntries, bufCapacity, blockBuf)
 		if err != nil {
 			return err
 		}
 
 		// Insert the block positions into the database.
-		if err := b.insertBlockPositionsTransaction(iteration, bufEntries, bufBlocks, hashMap); err != nil {
+		if err := b.insertBlockPositionsTransaction(iteration, bufEntries, bufCapacity, hashMap); err != nil {
 			return err
 		}
+
 		iteration++
 	}
 
@@ -195,7 +198,7 @@ func (b *Backup) Run() error {
 	return nil
 }
 
-func (b *Backup) insertBlockPositionsTransaction(iteration int, bufEntries int, bufBlocks int, hashMap map[int]string) error {
+func (b *Backup) insertBlockPositionsTransaction(iteration int, bufEntries int, bufCapacity int, hashMap map[int]string) error {
 	if len(hashMap) == 0 {
 		return nil
 	}
@@ -205,13 +208,14 @@ func (b *Backup) insertBlockPositionsTransaction(iteration int, bufEntries int, 
 		return err
 	}
 
-	posStartRange := iteration * bufBlocks
-	posEndRange := posStartRange + bufBlocks
-	var dRefMap map[int]string
+	posStartRange := iteration * bufCapacity
+	posEndRange := posStartRange + bufCapacity
 
+	dupMap := make(map[int]string, bufEntries)
+
+	// Query for the block positions associated with the last full backup and
+	// store the hash in a map for comparison.
 	if b.BackupType() == backupTypeDifferential {
-		dRefMap = make(map[int]string)
-
 		// Query hashes associated with the position range.
 		rows, err := b.store.Query("SELECT b.id, bp.position, hash FROM blocks b JOIN block_positions bp ON bp.block_id = b.id WHERE bp.backup_id = ? AND bp.position >= ? AND bp.position < ?", b.lastFullRecord.ID, posStartRange, posEndRange)
 		if err != nil {
@@ -230,7 +234,7 @@ func (b *Backup) insertBlockPositionsTransaction(iteration int, bufEntries int, 
 					return err
 				}
 			}
-			dRefMap[position] = hash
+			dupMap[position] = hash
 		}
 		rows.Close()
 	}
@@ -244,7 +248,7 @@ func (b *Backup) insertBlockPositionsTransaction(iteration int, bufEntries int, 
 
 		if b.BackupType() == backupTypeDifferential {
 			// Skip if the hash was already registered by the last full backup.
-			if _, ok := dRefMap[pos]; ok && dRefMap[pos] == hashMap[pos] {
+			if _, ok := dupMap[pos]; ok && dupMap[pos] == hashMap[pos] {
 				continue
 			}
 		}
@@ -279,9 +283,9 @@ func (b *Backup) insertBlockPositionsTransaction(iteration int, bufEntries int, 
 	return tx.Commit()
 }
 
-func (b *Backup) writeBlocks(target *os.File, iteration int, bufEntries int, bufBlocks int, blockBuf []byte) (map[int]string, error) {
+func (b *Backup) writeBlocks(target *os.File, iteration int, bufEntries int, bufCapacity int, blockBuf []byte) (map[int]string, error) {
 	// Calculate the hash for each block in the buffer.
-	hashMap := b.hashBufferedData(iteration, bufEntries, bufBlocks, blockBuf)
+	hashMap := b.hashBufferedData(iteration, bufEntries, bufCapacity, blockBuf)
 
 	// Start a transaction to insert the block hashes into the database
 	tx, err := b.store.Begin()
@@ -321,7 +325,7 @@ func (b *Backup) writeBlocks(target *os.File, iteration int, bufEntries int, buf
 		}
 
 		// Calculate original starting position.
-		startingPos := (pos - (iteration * bufBlocks)) * b.Config.BlockSize
+		startingPos := (pos - (iteration * bufCapacity)) * b.Config.BlockSize
 		endingPos := (startingPos + b.Config.BlockSize)
 
 		// TODO - We should be able to parallelize this.
@@ -339,7 +343,7 @@ func (b *Backup) writeBlocks(target *os.File, iteration int, bufEntries int, buf
 	return hashMap, nil
 }
 
-func (b *Backup) hashBufferedData(iteration int, bufEntries int, bufBlocks int, buf []byte) map[int]string {
+func (b *Backup) hashBufferedData(iteration int, bufEntries int, bufCapacity int, buf []byte) map[int]string {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 
@@ -361,7 +365,7 @@ func (b *Backup) hashBufferedData(iteration int, bufEntries int, bufBlocks int, 
 			hash := calculateBlockHash(blockData)
 
 			// Determine the position of the chunk.
-			pos := iteration*bufBlocks + i
+			pos := iteration*bufCapacity + i
 
 			mu.Lock()
 			hashMap[pos] = hash
