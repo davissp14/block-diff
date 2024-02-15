@@ -144,24 +144,18 @@ func (b *Backup) Run() error {
 
 	// Read chunks until we have enough to fill the buffer.
 	for iteration*bufCapacity < b.TotalBlocks() {
-		// Create a buffer to store the block hashes.
-		blockBuf := make([]byte, 0, bufSize)
+		offset := int64(iteration * bufCapacity * b.Config.BlockSize)
 
-		// Read blocks until we have enough to fill the buffer.
-		for blockNum := 0; blockNum < bufCapacity; blockNum++ {
-			// Determine the position of the chunk.
-			blockPos := iteration*bufCapacity + blockNum
-
-			// Read block data from the source file.
-			blockData, err := readBlock(sourceFile, b.TotalBlocks(), b.Config.BlockSize, blockPos)
-			switch {
-			case err == io.EOF:
-				continue
-			case err != nil:
-				return fmt.Errorf("error reading block data at position %d: %v", blockPos, err)
-			}
-
-			blockBuf = append(blockBuf, blockData...)
+		// Read block data from the source file.
+		blockBuf, err := readBlocks(sourceFile, bufSize, offset)
+		if err != nil {
+			return fmt.Errorf("error reading block data at position %d: %v", iteration*bufCapacity, err)
+		}
+		switch {
+		case err == io.EOF:
+			continue
+		case err != nil:
+			return fmt.Errorf("error reading block data at position %d: %v", offset, err)
 		}
 
 		// If the buffer is not full, we need to trim it.
@@ -213,8 +207,7 @@ func (b *Backup) insertBlockPositionsTransaction(iteration int, bufEntries int, 
 
 	dupMap := make(map[int]string, bufEntries)
 
-	// Query for the block positions associated with the last full backup and
-	// store the hash in a map for comparison.
+	// Query the positions range against the last full backup.
 	if b.BackupType() == backupTypeDifferential {
 		// Query hashes associated with the position range.
 		rows, err := b.store.Query("SELECT b.id, bp.position, hash FROM blocks b JOIN block_positions bp ON bp.block_id = b.id WHERE bp.backup_id = ? AND bp.position >= ? AND bp.position < ?", b.lastFullRecord.ID, posStartRange, posEndRange)
@@ -239,15 +232,16 @@ func (b *Backup) insertBlockPositionsTransaction(iteration int, bufEntries int, 
 		rows.Close()
 	}
 
+	// Prepare for bulk insert.
+	baseStmt := "INSERT INTO block_positions (backup_id, block_id, position) VALUES "
 	var valueStrings []string
 	var valueArgs []interface{}
-	baseStmt := "INSERT INTO block_positions (backup_id, block_id, position) VALUES "
 
 	for i := 0; i < bufEntries; i++ {
 		pos := posStartRange + i
 
 		if b.BackupType() == backupTypeDifferential {
-			// Skip if the hash was already registered by the last full backup.
+			// Skip if the hash is the same as the last full backup.
 			if _, ok := dupMap[pos]; ok && dupMap[pos] == hashMap[pos] {
 				continue
 			}
@@ -370,7 +364,6 @@ func (b *Backup) hashBufferedData(iteration int, bufEntries int, bufCapacity int
 			mu.Lock()
 			hashMap[pos] = hash
 			mu.Unlock()
-
 		}(i)
 	}
 
@@ -379,9 +372,42 @@ func (b *Backup) hashBufferedData(iteration int, bufEntries int, bufCapacity int
 	return hashMap
 }
 
+func readBlocks(file *os.File, bufSize int, offset int64) ([]byte, error) {
+	buffer := make([]byte, bufSize)
+
+	// Calculate the end range for the buffer as well as the end of the file.
+	endRange := offset + int64(bufSize)
+	endOfFile, err := file.Seek(0, io.SeekEnd)
+	if err != nil {
+		return nil, err
+	}
+
+	// If the end range exceeds the end of the file, we need to trim the buffer.
+	if endRange > endOfFile {
+		endRange = endOfFile
+		trimmedBufSize := endRange - offset
+		if trimmedBufSize <= 0 {
+			return nil, io.EOF
+		}
+		buffer = make([]byte, trimmedBufSize)
+	}
+
+	_, err = file.Seek(offset, 0)
+	if err != nil {
+		return nil, err
+	}
+	_, err = file.Read(buffer)
+	if err != nil {
+		return nil, err
+	}
+
+	return buffer, nil
+}
+
+// TODO - Reduce the number of seeds by reading in the whole buffer at once.
 func readBlock(disk *os.File, totalBlocks, blockSize, blockNum int) ([]byte, error) {
-	offset := int64(blockSize * blockNum)
 	buffer := make([]byte, blockSize)
+	offset := int64(blockSize * blockNum)
 
 	endRange := blockSize*blockNum + blockSize
 	endOfFile := blockSize * totalBlocks
