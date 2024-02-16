@@ -224,6 +224,37 @@ func (b *Backup) insertBlockPositionsTransaction(iteration int, bufEntries int, 
 	posStartRange := iteration * bufCapacity
 	posEndRange := posStartRange + bufCapacity
 
+	placeholders := strings.Trim(strings.Repeat("?,", bufEntries), ",")
+	blockQueryStr := "SELECT id, hash FROM blocks WHERE hash IN (" + placeholders + ")"
+	blockQueryValues := []interface{}{}
+
+	for i := 0; i < bufEntries; i++ {
+		blockQueryValues = append(blockQueryValues, hashMap[posStartRange+i])
+	}
+
+	rows, err := b.store.Query(blockQueryStr, blockQueryValues...)
+	if err != nil {
+		return err
+	}
+
+	// Create a map of the block hashes to their IDs.
+	blockIDMap := make(map[string]int)
+
+	for rows.Next() {
+		var id int
+		var hash string
+		if err := rows.Scan(&id, &hash); err != nil {
+			switch {
+			case err == sql.ErrNoRows:
+				break
+			default:
+				return err
+			}
+		}
+
+		blockIDMap[hash] = id
+	}
+
 	dupMap := make(map[int]string, bufEntries)
 
 	// Query the positions range against the last full backup.
@@ -265,8 +296,9 @@ func (b *Backup) insertBlockPositionsTransaction(iteration int, bufEntries int, 
 				continue
 			}
 		}
-		valueStrings = append(valueStrings, "(?, (SELECT id FROM blocks WHERE hash = ?), ?)")
-		valueArgs = append(valueArgs, b.Record.ID, hashMap[pos], pos)
+		blockID := blockIDMap[hashMap[pos]]
+		valueStrings = append(valueStrings, "(?, ?, ?)")
+		valueArgs = append(valueArgs, b.Record.ID, blockID, pos)
 	}
 
 	// If there are no inserts, we can abort the transaction.
