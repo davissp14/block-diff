@@ -18,7 +18,6 @@ func GetTargetSizeInBytes(devicePath string) (int, error) {
 	totalSizeInBytes := fileInfo.Size()
 	// Check to see if the file is a block device.
 	if mode&os.ModeDevice != 0 && mode&os.ModeCharDevice == 0 {
-		fmt.Println("Device is a block device")
 		totalSizeInBytes, err = getBlockDeviceSize(devicePath)
 		if err != nil {
 			return 0, fmt.Errorf("error getting block device size: %v", err)
