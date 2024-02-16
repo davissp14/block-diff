@@ -408,14 +408,19 @@ func (b *Backup) writeBlocks(target *os.File, iteration int, bufEntries int, buf
 
 	sort.Ints(insertableSlice)
 
+	buf := make([]byte, b.Config.BlockSize*len(insertableSlice))
+	var idx int
+
 	for _, pos := range insertableSlice {
 		startingPos := (pos - (iteration * bufCapacity)) * b.Config.BlockSize
-		endingPos := (startingPos + b.Config.BlockSize)
+		copy(buf[idx:], blockBuf[startingPos:startingPos+b.Config.BlockSize])
+		// Move the index for the next block
+		idx += b.Config.BlockSize
+	}
 
-		_, err = target.Write(blockBuf[startingPos:endingPos])
-		if err != nil {
-			return nil, fmt.Errorf("error writing block to backup file: %v", err)
-		}
+	_, err = target.Write(buf)
+	if err != nil {
+		return nil, fmt.Errorf("error writing block to backup file: %v", err)
 	}
 
 	return hashMap, nil
