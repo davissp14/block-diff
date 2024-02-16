@@ -92,7 +92,7 @@ func TestFullRestoreFromDifferential(t *testing.T) {
 		OutputFormat:    BackupOutputFormatFile,
 		OutputDirectory: "backups",
 		BlockSize:       1048576,
-		BlockBufferSize: 7,
+		BlockBufferSize: 3,
 	}
 
 	b, err := NewBackup(cfg)
