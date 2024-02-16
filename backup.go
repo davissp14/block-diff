@@ -192,8 +192,6 @@ func (b *Backup) Run() error {
 		// The number of individual blocks in the buffer.
 		bufEntries := len(blockBuf) / b.Config.BlockSize
 
-		fmt.Printf("iteration: %d, bufEntries: %d, bufCapacity: %d\n", iteration, bufEntries, bufCapacity)
-
 		// Insert the block positions into the database and write the blocks to the backup file.
 		hashMap, err := b.writeBlocks(targetFile, iteration, bufEntries, bufCapacity, blockBuf)
 		if err != nil {
