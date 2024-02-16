@@ -1,6 +1,7 @@
 package block
 
 import (
+	"bufio"
 	"database/sql"
 	"fmt"
 	"io"
@@ -142,19 +143,43 @@ func (b *Backup) Run() error {
 	// The current iteration we are on.
 	iteration := 0
 
+	// Seek to the beginning of the file.
+	_, err = sourceFile.Seek(0, io.SeekStart)
+	if err != nil {
+		return err
+	}
+
+	endOfFile := int64(b.SizeInBytes())
+
+	// Create a buffered reader to read the source file.
+	reader := bufio.NewReaderSize(sourceFile, bufSize)
+
 	// Read chunks until we have enough to fill the buffer.
 	for iteration*bufCapacity < b.TotalBlocks() {
+		blockBuf := make([]byte, bufSize)
+
 		offset := int64(iteration * bufCapacity * b.Config.BlockSize)
-		// Read block data from the source file.
-		blockBuf, err := readBlocks(sourceFile, bufSize, offset)
-		if err != nil {
-			return fmt.Errorf("error reading block data at position %d: %v", iteration*bufCapacity, err)
+		endRange := offset + int64(bufSize)
+
+		if endRange > endOfFile {
+			endRange = endOfFile
+			trimmedBufSize := endRange - offset
+			if trimmedBufSize <= 0 {
+				break
+			}
+			blockBuf = make([]byte, trimmedBufSize)
 		}
+
+		n, err := reader.Read(blockBuf)
 		switch {
-		case err == io.EOF:
-			continue
+		case err == io.EOF || err == io.ErrUnexpectedEOF:
+			// If we hit EOF before filling the buffer, that's expected behavior; we just trim the buffer.
+			blockBuf = blockBuf[:n]
+			if len(blockBuf) == 0 {
+				break
+			}
 		case err != nil:
-			return fmt.Errorf("error reading block data at position %d: %v", offset, err)
+			return fmt.Errorf("error reading block data: %w", err)
 		}
 
 		// If the buffer is not full, we need to trim it.
@@ -166,6 +191,8 @@ func (b *Backup) Run() error {
 
 		// The number of individual blocks in the buffer.
 		bufEntries := len(blockBuf) / b.Config.BlockSize
+
+		fmt.Printf("iteration: %d, bufEntries: %d, bufCapacity: %d\n", iteration, bufEntries, bufCapacity)
 
 		// Insert the block positions into the database and write the blocks to the backup file.
 		hashMap, err := b.writeBlocks(targetFile, iteration, bufEntries, bufCapacity, blockBuf)
@@ -432,38 +459,6 @@ func (b *Backup) hashBufferedData(iteration int, bufEntries int, bufCapacity int
 	wg.Wait()
 
 	return hashMap
-}
-
-func readBlocks(file *os.File, bufSize int, offset int64) ([]byte, error) {
-	buffer := make([]byte, bufSize)
-
-	// Calculate the end range for the buffer as well as the end of the file.
-	endRange := offset + int64(bufSize)
-	endOfFile, err := file.Seek(0, io.SeekEnd)
-	if err != nil {
-		return nil, err
-	}
-
-	// If the end range exceeds the end of the file, we need to trim the buffer.
-	if endRange > endOfFile {
-		endRange = endOfFile
-		trimmedBufSize := endRange - offset
-		if trimmedBufSize <= 0 {
-			return nil, io.EOF
-		}
-		buffer = make([]byte, trimmedBufSize)
-	}
-
-	_, err = file.Seek(offset, 0)
-	if err != nil {
-		return nil, err
-	}
-	_, err = file.Read(buffer)
-	if err != nil {
-		return nil, err
-	}
-
-	return buffer, nil
 }
 
 // Deprecated - use readblocks instead.
