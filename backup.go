@@ -357,7 +357,7 @@ func (b *Backup) writeBlocks(target *os.File, iteration int, bufEntries int, buf
 	}
 
 	// TODO - There may be a limit to the number of placeholders we can use in a query.
-	q := "INSERT INTO blocks (hash) VALUES  " + strings.Join(querySlice, ",")
+	q := "INSERT INTO blocks (hash) VALUES " + strings.Join(querySlice, ",")
 	insertBlockQuery, err := tx.Prepare(q)
 	if err != nil {
 		handleRollback(tx)
@@ -459,34 +459,6 @@ func (b *Backup) hashBufferedData(iteration int, bufEntries int, bufCapacity int
 	return hashMap
 }
 
-// Deprecated - use readblocks instead.
-func readBlock(disk *os.File, totalBlocks, blockSize, blockNum int) ([]byte, error) {
-	buffer := make([]byte, blockSize)
-	offset := int64(blockSize * blockNum)
-
-	endRange := blockSize*blockNum + blockSize
-	endOfFile := blockSize * totalBlocks
-	if endRange > endOfFile {
-		endRange = endOfFile
-		trimmedBlockSize := endRange - blockSize*blockNum
-		if trimmedBlockSize <= 0 {
-			return nil, io.EOF
-		}
-		buffer = make([]byte, trimmedBlockSize)
-	}
-
-	_, err := disk.Seek(offset, 0)
-	if err != nil {
-		return nil, err
-	}
-	_, err = disk.Read(buffer)
-	if err != nil {
-		return nil, err
-	}
-
-	return buffer, nil
-}
-
 func resolveVolume(store *Store, devicePath string) (*Volume, error) {
 	pathSlice := strings.Split(devicePath, "/")
 	volName := pathSlice[len(pathSlice)-1]
@@ -509,7 +481,6 @@ func determineBackupType(lastFull BackupRecord) (string, error) {
 	if lastFull == (BackupRecord{}) {
 		return backupTypeFull, nil
 	}
-
 	return backupTypeDifferential, nil
 }
 

@@ -2,6 +2,7 @@ package block
 
 import (
 	"fmt"
+	"io"
 	"os"
 )
 
@@ -123,4 +124,32 @@ func (r *Restore) restoreFromBackup(target *os.File, backup BackupRecord) error 
 	}
 
 	return nil
+}
+
+// Deprecated - instead.
+func readBlock(disk *os.File, totalBlocks, blockSize, blockNum int) ([]byte, error) {
+	buffer := make([]byte, blockSize)
+	offset := int64(blockSize * blockNum)
+
+	endRange := blockSize*blockNum + blockSize
+	endOfFile := blockSize * totalBlocks
+	if endRange > endOfFile {
+		endRange = endOfFile
+		trimmedBlockSize := endRange - blockSize*blockNum
+		if trimmedBlockSize <= 0 {
+			return nil, io.EOF
+		}
+		buffer = make([]byte, trimmedBlockSize)
+	}
+
+	_, err := disk.Seek(offset, 0)
+	if err != nil {
+		return nil, err
+	}
+	_, err = disk.Read(buffer)
+	if err != nil {
+		return nil, err
+	}
+
+	return buffer, nil
 }
