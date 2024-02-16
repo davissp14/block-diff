@@ -224,11 +224,6 @@ func (b *Backup) insertBlockPositionsTransaction(iteration int, bufEntries int, 
 	posStartRange := iteration * bufCapacity
 	posEndRange := posStartRange + bufCapacity
 
-	tx, err := b.store.Begin()
-	if err != nil {
-		return err
-	}
-
 	placeholders := strings.Trim(strings.Repeat("?,", bufEntries), ",")
 	blockQueryStr := "SELECT id, hash FROM blocks WHERE hash IN (" + placeholders + ")"
 	blockQueryValues := []interface{}{}
@@ -237,13 +232,7 @@ func (b *Backup) insertBlockPositionsTransaction(iteration int, bufEntries int, 
 		blockQueryValues = append(blockQueryValues, hashMap[posStartRange+i])
 	}
 
-	stsm, err := tx.Prepare(blockQueryStr)
-	if err != nil {
-		handleRollback(tx)
-		return err
-	}
-
-	rows, err := stsm.Query(blockQueryValues...)
+	rows, err := b.store.Query(blockQueryStr, blockQueryValues...)
 	if err != nil {
 		return err
 	}
@@ -318,7 +307,7 @@ func (b *Backup) insertBlockPositionsTransaction(iteration int, bufEntries int, 
 	}
 
 	// Start a transaction to insert the block positions into the database
-	tx, err = b.store.Begin()
+	tx, err := b.store.Begin()
 	if err != nil {
 		return err
 	}
