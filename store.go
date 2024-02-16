@@ -80,20 +80,32 @@ func (s Store) SetupDB() error {
 		return err
 	}
 
+	createBlocksIndexSQL := `CREATE INDEX IF NOT EXISTS idx_blocks_hash ON blocks(hash)`
+	_, err = s.Exec(createBlocksIndexSQL)
+	if err != nil {
+		return err
+	}
+
 	createBlockPositionsSQL := `CREATE TABLE IF NOT EXISTS block_positions (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		backup_id INTEGER NOT NULL,
 		block_id INTEGER NOT NULL,
 		position INTEGER NOT NULL,
 		FOREIGN KEY(backup_id) REFERENCES backups(id),
-		FOREIGN KEY(block_id) REFERENCES blocks(id)
+		FOREIGN KEY(block_id) REFERENCES blocks(id),
 		UNIQUE(backup_id, block_id, position)
 	);`
+
 	_, err = s.Exec(createBlockPositionsSQL)
 	if err != nil {
 		return err
 	}
 
+	createBlockPositionsIndexSQL := `CREATE INDEX IF NOT EXISTS idx_block_positions_backup_id ON block_positions(backup_id);`
+	_, err = s.Exec(createBlockPositionsIndexSQL)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
