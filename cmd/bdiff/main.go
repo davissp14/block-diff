@@ -242,6 +242,8 @@ var createCmd = &cobra.Command{
 
 // performBackup is a placeholder for your backup logic.
 func performBackup(devicePath, outputDir, outputFormat string, blockSize int, bufferBlockSize int) error {
+	totalDurationStart := time.Now()
+	storeInitializationStart := time.Now()
 	store, err := block.NewStore()
 	if err != nil {
 		return fmt.Errorf("error creating store: %v", err)
@@ -250,6 +252,7 @@ func performBackup(devicePath, outputDir, outputFormat string, blockSize int, bu
 	if err := store.SetupDB(); err != nil {
 		return fmt.Errorf("error setting up database: %v", err)
 	}
+	storeInitializationDuration := time.Since(storeInitializationStart)
 
 	cfg := &block.BackupConfig{
 		Store:           store,
@@ -262,14 +265,20 @@ func performBackup(devicePath, outputDir, outputFormat string, blockSize int, bu
 
 	fmt.Fprintf(os.Stderr, "Performing backup of %s to %s\n", devicePath, outputDir)
 
+	backupInitializationStart := time.Now()
+
 	b, err := block.NewBackup(cfg)
 	if err != nil {
 		return fmt.Errorf("error creating backup: %v", err)
 	}
+	backupInitializationDuration := time.Since(backupInitializationStart)
 
+	backupStart := time.Now()
 	if err := b.Run(); err != nil {
 		return fmt.Errorf("error performing backup: %v", err)
 	}
+	backupDuration := time.Since(backupStart)
+	totalDuration := time.Since(totalDurationStart)
 
 	if cfg.OutputFormat == block.BackupOutputFormatFile {
 		uniqueBlocks, err := store.UniqueBlocksInBackup(b.Record.ID)
@@ -286,7 +295,10 @@ func performBackup(devicePath, outputDir, outputFormat string, blockSize int, bu
 
 		fmt.Println("Backup completed successfully!")
 		fmt.Println("=============Info=================")
-		fmt.Printf("Backup Duration: %s\n", time.Since(b.Record.CreatedAt))
+		fmt.Printf("Total Duration: %s\n", totalDuration)
+		fmt.Printf("Store Initialization Duration: %s\n", storeInitializationDuration)
+		fmt.Printf("Backup Initialization Duration: %s\n", backupInitializationDuration)
+		fmt.Printf("Backup Duration: %s\n", backupDuration)
 		fmt.Printf("Backup file: %s/%s\n", outputDir, b.Record.FileName)
 		fmt.Printf("Backup size %s\n", formatFileSize(float64(b.Record.SizeInBytes)))
 		fmt.Printf("Source device size: %s\n", formatFileSize(float64(sourceSizeInBytes)))
